@@ -102,6 +102,45 @@ def test_clarification_cannot_grant_hard_deny_tier(make_engine):
     eng.close()
 
 
+def test_confirmed_escalation_stops_reasking(make_engine):
+    eng, ws = make_engine("confirm1")
+    cmd = {"command": f"rm -rf {ws}/build"}
+    assert eng.evaluate_action("Bash", cmd).effect == Effect.ASK     # first time → gate asks
+    eng.confirm_from_result("Bash", cmd)                              # human approved (it ran)
+    d = eng.evaluate_action("Bash", cmd)
+    assert d.effect == Effect.ALLOW and d.checkpoint == "confirmed"   # identical action no longer asks
+    eng.close()
+
+
+def test_confirmed_out_of_scope_read_widens_envelope(make_engine):
+    eng, ws = make_engine("confirm2")
+    ti = {"file_path": "/etc/hosts"}
+    assert eng.evaluate_action("Read", ti).effect == Effect.ASK
+    eng.confirm_from_result("Read", ti)
+    assert eng.evaluate_action("Read", ti).effect == Effect.ALLOW
+    assert eng.envelope.contains_read("/etc/hosts")                  # envelope actually widened
+    eng.close()
+
+
+def test_denied_action_never_widens(make_engine):
+    # the safety invariant: a hard DENY never ran, so confirm is a no-op and it stays DENY
+    eng, ws = make_engine("confirm3")
+    ti = {"file_path": os.path.expanduser("~/.ssh/id_rsa")}
+    assert eng.evaluate_action("Read", ti).effect == Effect.DENY
+    assert eng.confirm_from_result("Read", ti) is False              # nothing confirmed
+    assert eng.evaluate_action("Read", ti).effect == Effect.DENY     # still denied
+    assert not eng.envelope.explicitly_grants(os.path.expanduser("~/.ssh/id_rsa"))
+    eng.close()
+
+
+def test_confirmation_is_narrow_to_exact_target(make_engine):
+    eng, ws = make_engine("confirm4")
+    eng.confirm_from_result("Read", {"file_path": "/etc/hosts"})     # approve ONE path
+    assert eng.evaluate_action("Read", {"file_path": "/etc/hosts"}).effect == Effect.ALLOW
+    assert eng.evaluate_action("Read", {"file_path": "/etc/shadow"}).effect == Effect.ASK  # not the other
+    eng.close()
+
+
 def test_decisions_persist_across_engine_instances(make_engine, base_dir):
     # the store is keyed by session_id → a fresh Engine (new "subprocess") sees prior state
     eng, ws = make_engine("persist")

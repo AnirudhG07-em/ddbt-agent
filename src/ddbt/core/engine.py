@@ -28,6 +28,7 @@ from ddbt.core.audit import AuditLogger
 from ddbt.core.checkpoint2 import State
 from ddbt.core.provenance import ProvenanceTracker
 from ddbt.core.staging import Lane, StagingManager, route
+from ddbt.core.trajectory import TrajectoryMonitor
 from ddbt.policy.classifier import classify
 from ddbt.policy.defaults import Policy, default_policy
 from ddbt.store.session import SessionStore
@@ -84,6 +85,32 @@ _DOMAIN_RE = re.compile(r"\b((?:[a-z0-9-]+\.)+[a-z]{2,})\b", re.IGNORECASE)
 _PATH_RE = re.compile(r"(?:^|\s)((?:~|/)[^\s'\"]+)")
 
 
+_CONTINUATION = {"continue", "keep going", "go on", "next", "proceed", "yes", "do it", "go ahead", "resume"}
+
+
+def _is_substantive_goal(prompt: str) -> bool:
+    """A prompt carries a goal worth judging against only if it's more than a
+    continuation cue and has some content (doc §3.4: goal-less prompts → no judging)."""
+    p = prompt.strip().lower().rstrip(".!")
+    if p in _CONTINUATION:
+        return False
+    return len(re.findall(r"[a-z0-9]{3,}", p)) >= 3
+
+
+def _severity(effect: "Effect") -> int:
+    return {Effect.ALLOW: 0, Effect.ASK: 1, Effect.DENY: 2}[effect]
+
+
+def _signature(action) -> str:
+    """Stable structural signature of an action (tool + op + sorted targets).
+
+    Deliberately narrow: confirmation authorises THIS exact op on THESE exact targets,
+    not a whole tool or a broad pattern.
+    """
+    targets = sorted(f"{t.kind}:{t.value}" for t in action.targets)
+    return f"{action.tool_name}|{action.op}|{'|'.join(targets)}"
+
+
 class Engine:
     def __init__(
         self,
@@ -93,10 +120,14 @@ class Engine:
         base_dir=None,
         judge: checkpoint3.DiffJudge | None = None,
         classifier=classify,
+        intent_judge=None,
     ):
         self.session_id = session_id
         self.workspace_root = workspace_root
         self.policy = policy or default_policy()
+        # optional blind relevance judge (doc §3.4/§5.2). Consulted ONLY on the judgeable
+        # middle tier, with structural facts + the trusted goal — never untrusted content.
+        self.intent_judge = intent_judge
         # the classifier maps an agent's (tool_name, tool_input) → StructuralAction.
         # Pluggable so a non-Claude-Code agent (e.g. AgentDojo's domain tools) can supply
         # its own mapping while the deciding pipeline stays identical — the "any agent" point.
@@ -105,8 +136,10 @@ class Engine:
         self.tracker = ProvenanceTracker(self.store, self.policy)
         self.audit = AuditLogger(self.store)
         self.staging = StagingManager(self.store)
+        self.trajectory = TrajectoryMonitor(self.store, self.policy)
         self.judge = judge
         self.envelope = envelope_mod.load_or_seed(self.store, workspace_root, self.policy)
+        self.goal = self.store.get_meta("goal", "") or ""  # standing goal for the intent judge
 
     # ---- lifecycle ----
 
@@ -134,6 +167,12 @@ class Engine:
         The user prompt is origin=USER (pristine, trusted) — extracting named domains/paths
         from it is a legitimate, deliberate widening (doc §3.2), never an untrusted vector.
         """
+        # capture the goal for the intent judge — but only from a SUBSTANTIVE prompt.
+        # "continue"/"keep going" carry no goal, so we keep the standing one (doc §3.4).
+        if _is_substantive_goal(prompt):
+            self.goal = prompt.strip()
+            self.store.set_meta("goal", self.goal)
+
         granted: list[str] = []
         for m in _DOMAIN_RE.finditer(prompt):
             self.envelope.grant_domain(m.group(1))
@@ -165,24 +204,68 @@ class Engine:
 
     # ---- per-action ----
 
-    def evaluate_action(self, tool_name: str, tool_input: dict, cwd: str | None = None) -> Decision:
-        action = self.classify(tool_name, tool_input or {}, self.policy)
-        cwd = cwd or self.workspace_root
+    def _decide(self, action, cwd: str):
+        """Full per-action decision, shared by evaluate_action and confirm_from_result.
 
+        Order: deterministic pipeline → prior-confirmation downgrade → blind intent judge
+        (only on the judgeable middle tier). Returns (effect, checkpoint, reason, c2, lane).
+        """
         c2 = checkpoint2.evaluate(action, self.envelope, self.tracker, self.policy, cwd)
         verdict = irreversibility.check(action, self.envelope, self.policy)
         lane = route(action, self.envelope, self.policy, cwd)
-
         effect, checkpoint = self._map(c2.state, verdict, lane)
+        reason = c2.reason
+        if checkpoint == "irreversibility":
+            reason = verdict.reason if verdict.triggered else "irreversible op requires confirmation"
+
+        # 1) prior human confirmation (doc §3.2): identical gated action already approved
+        if effect == Effect.ASK and self.store.is_confirmed(_signature(action)):
+            return Effect.ALLOW, "confirmed", "previously confirmed by the user (gate approval)", c2, lane
+
+        # 2) blind intent judge — ONLY on the judgeable middle tier, never the hard tier,
+        #    and only when we have a goal to judge against (doc §3.4/§5.2).
+        if self.intent_judge and c2.judgeable and self.goal and effect in (Effect.DENY, Effect.ASK):
+            v = self._consult_intent(action, c2)
+            if not v.relevant:
+                return Effect.DENY, "intent:off-task", v.reason, c2, lane
+            if c2.stakes == "high":  # on-task but risky → stakes decide we still ask a human
+                effect, checkpoint, reason = Effect.ASK, "intent:gate", f"on-task but high-stakes: {v.reason}"
+            else:  # on-task + low stakes
+                effect, checkpoint, reason = Effect.ALLOW, "intent:on-task", v.reason
+
+        # cumulative-trajectory check: can only RAISE friction (ALLOW→ASK), never lower it,
+        # so a heuristic false-positive asks a human and never authorises (doc §1 lookahead).
+        traj = self.trajectory.assess(action)
+        if traj is not None:
+            t_effect = Effect.DENY if traj[0] == State.DENY else Effect.ASK
+            if _severity(t_effect) > _severity(effect):
+                effect, checkpoint, reason = t_effect, "trajectory", traj[1]
+
+        return effect, checkpoint, reason, c2, lane
+
+    def _consult_intent(self, action, c2):
+        from ddbt.judge.base import IntentFacts
+
+        facts = IntentFacts(
+            goal=self.goal,
+            tool=action.tool_name,
+            op=action.op,
+            targets=[t.value for t in action.targets],
+            stakes=c2.stakes,
+        )
+        v = self.intent_judge.judge(facts)
+        self.audit.event("intent_judge", relevant=v.relevant, reason=v.reason, summary=action.summary)
+        return v
+
+    def evaluate_action(self, tool_name: str, tool_input: dict, cwd: str | None = None) -> Decision:
+        action = self.classify(tool_name, tool_input or {}, self.policy)
+        cwd = cwd or self.workspace_root
+        effect, checkpoint, reason, c2, lane = self._decide(action, cwd)
 
         staged = False
         if lane == Lane.STAGED and effect == Effect.ALLOW:
             self.staging.stage(action, tool_input or {}, lane)
             staged = True
-
-        reason = c2.reason
-        if checkpoint == "irreversibility":
-            reason = verdict.reason if verdict.triggered else "irreversible op requires confirmation"
 
         audit_id = self.audit.decision(
             checkpoint=checkpoint,
@@ -216,8 +299,49 @@ class Engine:
     def record_result(self, tool_name: str, tool_input: dict, tool_response: dict, cwd: str | None = None) -> None:
         action = self.classify(tool_name, tool_input or {}, self.policy)
         label = self.tracker.label_result(action, tool_response or {})
+        self.trajectory.record(action)  # accumulate cumulative-trajectory counters
         if label.is_tainted:
             self.audit.event("labeled", tool=action.tool_name, summary=action.summary, label=label.describe())
+
+    def confirm_from_result(self, tool_name: str, tool_input: dict, cwd: str | None = None) -> bool:
+        """Called at PostToolUse: if a gated (ASK) action nonetheless RAN, a human approved
+        it — a denied action never reaches PostToolUse. Record that confirmation so the
+        identical action stops re-asking, and widen the envelope to cover its targets.
+
+        This is the ONLY runtime growth path beyond pristine user grants, and it is
+        confirmation-gated by construction: hard-denies never run → never widen; sensitive
+        sources are DENY (not ASK) → never confirmable here either.
+        """
+        action = self.classify(tool_name, tool_input or {}, self.policy)
+        cwd = cwd or self.workspace_root
+        effect, _checkpoint, _reason, _c2, _lane = self._decide(action, cwd)
+        if effect != Effect.ASK:
+            return False  # was ALLOW (nothing to confirm) or DENY (must never widen)
+
+        self.store.add_confirmed(_signature(action))
+        widened = self._widen_for(action, cwd)
+        envelope_mod.save(self.store, self.envelope)
+        self.audit.event(
+            "confirmed_grant", tool=action.tool_name, summary=action.summary, widened=widened
+        )
+        return True
+
+    def _widen_for(self, action, cwd: str) -> list[str]:
+        """Grant the action's targets into the envelope. Never grants a sensitive path
+        (those are DENY, not ASK, so they can't reach here — but we double-guard)."""
+        widened: list[str] = []
+        for t in action.targets:
+            if t.kind == "domain":
+                self.envelope.grant_domain(t.value)
+                widened.append(f"domain:{t.value}")
+            elif t.kind == "path" and not self.policy.is_sensitive_path(t.value):
+                resolved = str(self.policy.resolve(t.value, cwd))
+                if action.op in ("write", "delete"):
+                    self.envelope.grant_write(resolved)
+                else:
+                    self.envelope.grant_read(resolved)
+                widened.append(f"path:{resolved}")
+        return widened
 
     # ---- commit ----
 

@@ -42,6 +42,12 @@ class State(enum.IntEnum):
 class Concern:
     state: State
     reason: str
+    # judgeable: a block/escalation whose RELEVANCE to the goal an intent judge may
+    # refine (out-of-scope read, outbound to a novel domain). NON-judgeable concerns are
+    # dangerous-regardless (sensitive source, toxic flow, out-of-envelope destruction) —
+    # the hard tier the intent judge must never rescue.
+    judgeable: bool = False
+    stakes: str = "low"  # "low" (reads/fetch) | "high" (outbound/irreversible)
 
 
 @dataclass(slots=True)
@@ -49,6 +55,8 @@ class Checkpoint2Result:
     state: State
     reasons: list[str] = field(default_factory=list)
     facts: dict = field(default_factory=dict)  # structural facts, for the audit log
+    judgeable: bool = False
+    stakes: str = "low"
 
     @property
     def reason(self) -> str:
@@ -80,7 +88,9 @@ def evaluate(
         if policy.is_sensitive_path(raw):
             sensitive_paths.add(raw)
             if not env.explicitly_grants(str(policy.resolve(raw, cwd))):
-                concerns.append(Concern(State.DENY, f"sensitive source outside envelope: {raw}"))
+                # hard tier: a secret is dangerous regardless of any "relevance" — the
+                # intent judge can NEVER rescue this (judgeable=False).
+                concerns.append(Concern(State.DENY, f"sensitive source outside envelope: {raw}", judgeable=False))
 
     # --- reads (non-sensitive; sensitive handled by the guard above) ---
     # "exec" covers bash commands (cat/cp/head/...) whose path args read out-of-tree
@@ -124,7 +134,12 @@ def evaluate(
     worst = max(concerns, key=lambda c: c.state)
     reasons = [c.reason for c in concerns if c.state == worst.state]
     facts["concerns"] = [(c.state.name, c.reason) for c in concerns]
-    return Checkpoint2Result(worst.state, reasons, facts)
+    # the decision is judgeable only if the WORST concern is — a single hard concern
+    # (sensitive read) makes the whole action non-judgeable, even if others are softer.
+    worst_concerns = [c for c in concerns if c.state == worst.state]
+    judgeable = all(c.judgeable for c in worst_concerns) and worst.state != State.ALLOW
+    stakes = "high" if any(c.stakes == "high" for c in worst_concerns) else "low"
+    return Checkpoint2Result(worst.state, reasons, facts, judgeable=judgeable, stakes=stakes)
 
 
 # ---- per-concern judges (each content-blind) ----
@@ -139,17 +154,15 @@ def _read_concern(
     # authorises a secret (doc §3.1 / §5.3). Non-sensitive reads use ordinary scope.
     granted = env.explicitly_grants(resolved) if label.sensitive else env.contains_read(resolved)
     if label.sensitive and not granted:
-        # sensitive source + outside the envelope → irrelevant-and-dangerous
-        return Concern(State.DENY, f"sensitive source outside envelope: {raw}")
+        # sensitive source → hard tier (never judgeable)
+        return Concern(State.DENY, f"sensitive source outside envelope: {raw}", judgeable=False)
     if granted:
         return Concern(State.ALLOW, f"in-envelope read: {raw}")
     if policy.is_benign_read_path(raw):
         return Concern(State.ALLOW, f"benign system path: {raw}")
-    # outside the envelope but not sensitive → boundary. Tightened by policy to escalate
-    # (a deliberate human gate) rather than silently pass; else stays ambiguous/reversible.
-    if policy.escalate_out_of_scope_reads:
-        return Concern(State.ESCALATE, f"read outside envelope: {raw}")
-    return Concern(State.AMBIGUOUS, f"read outside envelope (non-sensitive): {raw}")
+    # out-of-scope, non-sensitive read → RELEVANCE is the open question → judgeable, low stakes
+    state = State.ESCALATE if policy.escalate_out_of_scope_reads else State.AMBIGUOUS
+    return Concern(state, f"read outside envelope: {raw}", judgeable=True, stakes="low")
 
 
 def _write_concern(
@@ -157,31 +170,52 @@ def _write_concern(
 ) -> Concern:
     resolved = str(policy.resolve(raw, cwd))
     if policy.is_sensitive_path(raw) and not env.explicitly_grants(resolved):
-        return Concern(State.DENY, f"write to sensitive path outside envelope: {raw}")
+        return Concern(State.DENY, f"write to sensitive path outside envelope: {raw}", judgeable=False)
     if env.contains_write(resolved):
         return Concern(State.ALLOW, f"in-envelope write: {raw}")
-    return Concern(State.AMBIGUOUS, f"write outside envelope: {raw}")
+    # out-of-scope write → judgeable (could be on-task), high stakes (mutates outside root)
+    return Concern(State.AMBIGUOUS, f"write outside envelope: {raw}", judgeable=True, stakes="high")
 
 
 def _destructive_concern(raw: str, env: Envelope, policy: Policy, cwd: str | None) -> Concern:
     resolved = str(policy.resolve(raw, cwd))
     if env.contains_write(resolved):
-        # in-envelope destructive op → relevant but irreversible → escalate (the
-        # irreversibility gate will hard-confirm; staging/git makes it recoverable)
-        return Concern(State.ESCALATE, f"destructive op on in-envelope path: {raw}")
-    # destructive op OUTSIDE the envelope → irrelevant-and-dangerous → no override
-    return Concern(State.DENY, f"destructive op outside envelope: {raw}")
+        # in-envelope destructive op → relevant but irreversible → judgeable, high stakes
+        return Concern(State.ESCALATE, f"destructive op on in-envelope path: {raw}", judgeable=True, stakes="high")
+    # destructive op OUTSIDE the envelope (rm -rf ~) → dangerous regardless → HARD tier
+    return Concern(State.DENY, f"destructive op outside envelope: {raw}", judgeable=False)
+
+
+def _flow_label(action: StructuralAction, tracker: ProvenanceTracker):
+    """The IFC label of the data this action would emit (doc §4): worst-label-wins join of
+    every referenced resource's PROPAGATED label and the session watermark. The decider
+    reasons over this label, never the bytes — so it catches *laundered* taint (untrusted
+    web content written to a file, then sent out) that path/pattern matching alone misses."""
+    from ddbt.core.labels import join_all
+
+    labels = [tracker.resource_label(p) for p in action.paths]
+    labels.append(tracker.watermark())
+    return join_all(labels)
 
 
 def _outbound_concern(action: StructuralAction, env: Envelope, tracker: ProvenanceTracker) -> Concern:
+    flow = _flow_label(action, tracker)
+    # confidential data leaving → HARD toxic-flow tier, never judged (even to a granted dest)
+    if flow.sensitive:
+        return Concern(State.DENY, "outbound carries confidential (sensitive) data — toxic flow", judgeable=False)
     domains = action.domains
     if not domains:
-        return Concern(State.ESCALATE, "outbound with no resolvable destination")
+        return Concern(State.ESCALATE, "outbound with no resolvable destination", judgeable=False, stakes="high")
     out_domains = [d for d in domains if not env.allows_domain(d)]
     if out_domains:
-        # external sink outside the envelope → irrelevant-and-dangerous
-        return Concern(State.DENY, f"outbound to non-envelope domain(s): {', '.join(out_domains)}")
-    # destination is granted; but if the session context is sensitive, flag the toxic-flow
-    if tracker.watermark().sensitive:
-        return Concern(State.ESCALATE, "outbound to granted domain while context is sensitive")
+        # outbound to a novel domain → RELEVANCE is the question → judgeable, high stakes
+        return Concern(
+            State.DENY, f"outbound to non-envelope domain(s): {', '.join(out_domains)}", judgeable=True, stakes="high"
+        )
+    # destination is granted — but if the data flow is UNTRUSTED-derived (laundered taint),
+    # sending it out is still an integrity concern → escalate even to a granted domain
+    if flow.is_untrusted:
+        return Concern(
+            State.ESCALATE, f"untrusted-derived data to granted domain(s): {', '.join(domains)}", judgeable=True, stakes="high"
+        )
     return Concern(State.ALLOW, f"outbound to granted domain(s): {', '.join(domains)}")

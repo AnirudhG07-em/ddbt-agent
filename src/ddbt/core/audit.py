@@ -52,6 +52,8 @@ class AuditLogger:
                 )
             elif kind in ("declassify", "declassify_denied"):
                 lines.append(f"  ⤺ {kind}: {e.get('resource','')} ({e.get('reason', e.get('delta_bytes',''))})")
+            elif kind == "labeled":
+                lines.append(f"  ◦ labeled {e.get('tool','')} result → {e.get('label','')}")
             elif kind in ("staged", "released", "dropped"):
                 lines.append(f"  ⧗ {kind}: id={e.get('id','')} {e.get('summary', e.get('kind',''))}")
             elif kind == "bootstrap":

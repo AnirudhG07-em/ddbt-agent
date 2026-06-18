@@ -58,15 +58,29 @@ uv run python demo/run_demos.py    # the §7 walkthroughs (ssh-exfil, rm -rf, be
 Wire it into a real Claude Code session:
 
 ```bash
-uv run ddbt install --project /path/to/scratch/repo   # writes .claude/settings.json hooks
-uv run ddbt audit  --session <session_id>             # inspect the decision trail
+uv run ddbt install --project /path/to/scratch/repo            # deterministic core only
+uv run ddbt install --project /path/to/scratch/repo --intent   # + blind intent judge (needs ANTHROPIC_API_KEY)
+uv run ddbt audit  --session <session_id>                      # inspect the decision trail
 ```
+
+The optional **blind intent judge** (`--intent`, Claude Haiku) refines the *judgeable
+middle tier* by relevance to the trusted goal — it sees only structural facts
+(tool/op/target), never file/page content or the agent's reasoning, so it can't be
+injected. It can smooth or tighten the middle; it can **never** rescue the hard tier
+(sensitive sources, toxic flow, out-of-envelope destruction). Hybrid by stakes: on-task
+low-stakes → allow, on-task high-stakes → ask a human, off-task → deny.
 
 ## Status
 
-v0.1 — deterministic core + Claude Code hook adapter + demos (zero added LLM calls).
-Roadmap: v0.2 benchmarks (AgentDojo, InjecAgent, AgentDyn, Saber/RedCode) · v0.3 blind
-commit-time LLM diff-judge + MCP adapter.
+- **Deterministic core** — provenance, envelope, Checkpoint 2, irreversibility, staging,
+  Boundary 0, audit. Zero LLM on the hot path. Claude Code hook adapter + demos.
+- **Confirmed-gate widening** — a human-approved gate stops re-asking (PostToolUse signal).
+- **Blind intent judge** (optional, `--intent`) — relevance judging on the judgeable tier,
+  structurally un-injectable; never overrides the hard tier.
+- **AgentDojo benchmark adapter** — `ddbt bench agentdojo` (security/utility vs the literature).
+
+Roadmap: more benchmarks (InjecAgent, AgentDyn, Saber/RedCode) · the blind *commit-time*
+diff-judge (Checkpoint 3, currently a deterministic stub) · MCP adapter · OS substrate.
 
 ## Honest limits (v0.1)
 

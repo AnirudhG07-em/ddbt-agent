@@ -17,9 +17,24 @@ silent allow nor a hard block) so a bug never silently disables enforcement.
 from __future__ import annotations
 
 import json
+import os
 import sys
 
 from ddbt.core.engine import Effect, Engine
+
+
+def _engine(payload: dict) -> Engine:
+    """Build the engine for a hook invocation, attaching the blind intent judge when
+    DDBT_INTENT_JUDGE is set AND a key is present. If enabled but no key, we fall back to
+    deterministic (rather than fail-closed-DENY on every judgeable action — safer UX)."""
+    session_id = payload.get("session_id", "default")
+    cwd = payload.get("cwd") or "."
+    intent_judge = None
+    if os.environ.get("DDBT_INTENT_JUDGE") and os.environ.get("ANTHROPIC_API_KEY"):
+        from ddbt.judge.intent import AnthropicIntentJudge
+
+        intent_judge = AnthropicIntentJudge(os.environ.get("DDBT_INTENT_MODEL", "claude-haiku-4-5"))
+    return Engine(session_id, workspace_root=cwd, intent_judge=intent_judge)
 
 
 def _pre_output(decision: str, reason: str = "") -> dict:
@@ -42,7 +57,7 @@ def handle_pretooluse(payload: dict) -> dict:
     tool_name = payload.get("tool_name", "")
     tool_input = payload.get("tool_input", {}) or {}
 
-    eng = Engine(session_id, workspace_root=cwd)
+    eng = _engine(payload)
     try:
         decision = eng.evaluate_action(tool_name, tool_input, cwd=cwd)
     finally:
@@ -58,14 +73,13 @@ def handle_pretooluse(payload: dict) -> dict:
 def handle_posttooluse(payload: dict) -> dict:
     session_id = payload.get("session_id", "default")
     cwd = payload.get("cwd") or "."
-    eng = Engine(session_id, workspace_root=cwd)
+    tool_name = payload.get("tool_name", "")
+    tool_input = payload.get("tool_input", {}) or {}
+    eng = _engine(payload)
     try:
-        eng.record_result(
-            payload.get("tool_name", ""),
-            payload.get("tool_input", {}) or {},
-            payload.get("tool_response", {}) or {},
-            cwd=cwd,
-        )
+        # the tool RAN, so a gated (ASK) action was human-approved → confirm + widen
+        eng.confirm_from_result(tool_name, tool_input, cwd=cwd)
+        eng.record_result(tool_name, tool_input, payload.get("tool_response", {}) or {}, cwd=cwd)
     finally:
         eng.close()
     return {}
@@ -75,7 +89,7 @@ def handle_sessionstart(payload: dict) -> dict:
     session_id = payload.get("session_id", "default")
     cwd = payload.get("cwd") or "."
     source = payload.get("source", "startup")
-    eng = Engine(session_id, workspace_root=cwd)
+    eng = _engine(payload)
     try:
         result = eng.on_session_start(source, cwd)
     finally:
@@ -91,7 +105,7 @@ def handle_sessionstart(payload: dict) -> dict:
 def handle_userpromptsubmit(payload: dict) -> dict:
     session_id = payload.get("session_id", "default")
     cwd = payload.get("cwd") or "."
-    eng = Engine(session_id, workspace_root=cwd)
+    eng = _engine(payload)
     try:
         context = eng.on_user_prompt(payload.get("prompt", "") or "")
     finally:
@@ -107,7 +121,7 @@ def handle_configchange(payload: dict) -> dict:
     """
     session_id = payload.get("session_id", "default")
     cwd = payload.get("cwd") or "."
-    eng = Engine(session_id, workspace_root=cwd)
+    eng = _engine(payload)
     try:
         result = eng.verify_config(cwd)
     finally:
@@ -120,7 +134,7 @@ def handle_configchange(payload: dict) -> dict:
 def handle_stop(payload: dict) -> dict:
     session_id = payload.get("session_id", "default")
     cwd = payload.get("cwd") or "."
-    eng = Engine(session_id, workspace_root=cwd)
+    eng = _engine(payload)
     try:
         result = eng.commit_batch()
     finally:

@@ -9,3 +9,5 @@ build
 .ddbt
 .env
 .env.*
+bench/results/
+bench/data/injecagent

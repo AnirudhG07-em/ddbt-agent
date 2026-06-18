@@ -16,16 +16,25 @@ EVENTS = ["PreToolUse", "PostToolUse", "SessionStart", "UserPromptSubmit", "Stop
 _MARKER = "ddbt.adapters.claude_code.hook"
 
 
-def _command(event: str) -> str:
-    return f"{sys.executable} -m {_MARKER} {event}"
+def _command(event: str, intent: bool = False, intent_model: str | None = None) -> str:
+    # bake the intent-judge env into the command itself so it's active regardless of the
+    # hook's (non-interactive) shell environment. The judge still needs ANTHROPIC_API_KEY
+    # to be present in the process Claude Code launches.
+    prefix = ""
+    if intent:
+        prefix = "DDBT_INTENT_JUDGE=1 "
+        if intent_model:
+            prefix += f"DDBT_INTENT_MODEL={intent_model} "
+    return f"{prefix}{sys.executable} -m {_MARKER} {event}"
 
 
-def _hook_entry(event: str) -> dict:
+def _hook_entry(event: str, intent: bool = False, intent_model: str | None = None) -> dict:
     timeout = 30 if event in ("PreToolUse", "UserPromptSubmit") else 60
-    return {"matcher": "*", "hooks": [{"type": "command", "command": _command(event), "timeout": timeout}]}
+    cmd = _command(event, intent, intent_model)
+    return {"matcher": "*", "hooks": [{"type": "command", "command": cmd, "timeout": timeout}]}
 
 
-def install(project_dir: str) -> Path:
+def install(project_dir: str, intent: bool = False, intent_model: str | None = None) -> Path:
     project = Path(project_dir)
     settings_path = project / ".claude" / "settings.json"
     settings_path.parent.mkdir(parents=True, exist_ok=True)
@@ -41,7 +50,7 @@ def install(project_dir: str) -> Path:
     hooks = settings.setdefault("hooks", {})
     for event in EVENTS:
         existing = [e for e in hooks.get(event, []) if _MARKER not in json.dumps(e)]
-        hooks[event] = existing + [_hook_entry(event)]
+        hooks[event] = existing + [_hook_entry(event, intent, intent_model)]
 
     settings_path.write_text(json.dumps(settings, indent=2) + "\n")
     return settings_path

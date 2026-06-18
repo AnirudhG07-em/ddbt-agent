@@ -65,8 +65,14 @@ class StructuralAction:
 # ---- domain / url extraction -------------------------------------------------
 
 _URL_RE = re.compile(r"\b(?:https?://|ftp://)([^/\s'\"]+)", re.IGNORECASE)
-# bare host:port or host in args like `scp x host:/p`, `nc host port`
-_HOST_RE = re.compile(r"\b((?:[a-z0-9-]+\.)+[a-z]{2,})\b", re.IGNORECASE)
+# bare host in args like `scp x host:/p`, `nc host port`. The negative lookbehind keeps us
+# from matching a hostname embedded inside a file path (…/notes.txt) or token.
+_HOST_RE = re.compile(r"(?<![\w./@-])((?:[a-z0-9-]+\.)+[a-z]{2,})\b", re.IGNORECASE)
+# last-label values that mean "this is a filename, not a host"
+_FILE_EXTS = frozenset(
+    "txt py json md csv log sh yaml yml ini cfg js ts tsx html xml pem key env lock toml "
+    "go rs java c cpp h rb php sql pdf png jpg gif zip tar gz".split()
+)
 
 
 def _domains_in(text: str) -> list[str]:
@@ -75,6 +81,8 @@ def _domains_in(text: str) -> list[str]:
         found.append(m.group(1).split(":")[0].lower())
     for m in _HOST_RE.finditer(text):
         host = m.group(1).lower()
+        if host.rsplit(".", 1)[-1] in _FILE_EXTS:
+            continue  # e.g. notes.txt / config.yaml — a filename, not a domain
         if host not in found:
             found.append(host)
     return found
@@ -104,9 +112,39 @@ def _looks_like_path(tok: str) -> bool:
     """A token is a path target if it has a path separator / ~ and no shell metachars."""
     if tok.startswith("-") or not tok:
         return False
+    if "://" in tok:
+        return False  # a URL, not a filesystem path (handled as a domain target)
     if any(c in _NON_PATH_CHARS for c in tok):
         return False  # redirect (2>/dev/null), glob (*.py), pipe, var — not a literal path
     return tok.startswith(("/", "~", "../", "./")) or "/" in tok
+
+
+# curl/wget flags that indicate data is being UPLOADED (a sink), not just fetched
+_UPLOAD_FLAGS = ("-d", "--data", "--data-raw", "--data-binary", "--data-urlencode",
+                 "-F", "--form", "-T", "--upload-file", "--post-data", "--post-file")
+_GET_FETCHERS = {"curl", "wget"}
+
+
+def _is_data_upload(toks: list[str], command: str) -> bool:
+    """True if a curl/wget command sends a body (POST/PUT/upload) rather than a plain GET.
+
+    A read-only GET is retrieval (like WebFetch); only an upload is an outbound sink.
+    Command substitution or an @file argument also count — they can smuggle data out.
+    """
+    if "$(" in command or "`" in command:
+        return True
+    for i, t in enumerate(toks[1:], 1):
+        if t.startswith("@"):
+            return True
+        if any(t == f or t.startswith(f + "=") for f in _UPLOAD_FLAGS):
+            return True
+        if t in ("-d", "-F", "-T"):  # short flags take a following value
+            return True
+        if t == "-X" or t.startswith("--request"):
+            nxt = toks[i + 1].upper() if i + 1 < len(toks) else ""
+            if nxt in ("POST", "PUT", "DELETE", "PATCH"):
+                return True
+    return False
 
 
 def _safe_split(command: str) -> list[list[str]]:
@@ -135,6 +173,7 @@ def _classify_bash(command: str, policy: "Policy") -> StructuralAction:
     targets: list[Target] = []
     dangerous: set[str] = set()
     is_outbound = False
+    fetched = False  # a read-only GET happened (retrieval, not a sink)
     op = "exec"
 
     for toks in segments:
@@ -144,10 +183,17 @@ def _classify_bash(command: str, policy: "Policy") -> StructuralAction:
         sub = toks[1] if len(toks) > 1 else ""
 
         if binary in _NET_BINARIES or (binary, sub) in _NET_SUBCMDS:
-            is_outbound = True
-            op = "send"
-            for d in _domains_in(" ".join(toks)):
-                targets.append(Target("domain", d))
+            doms = _domains_in(" ".join(toks))
+            # a plain GET via curl/wget is retrieval, like WebFetch — NOT an outbound sink
+            if binary in _GET_FETCHERS and not _is_data_upload(toks, command):
+                fetched = True
+                for d in doms:
+                    targets.append(Target("domain", d))
+            else:
+                is_outbound = True
+                op = "send"
+                for d in doms:
+                    targets.append(Target("domain", d))
 
         if binary in _DESTRUCTIVE:
             kind = _DESTRUCTIVE[binary]
@@ -165,10 +211,19 @@ def _classify_bash(command: str, policy: "Policy") -> StructuralAction:
             if verb in upper:
                 dangerous.add("drop")
 
-        # path-looking arguments (absolute, ~, or relative-with-slash) are structural targets
+        # path-looking arguments (absolute, ~, or relative-with-slash) are structural targets.
+        # strip curl's @file prefix so the path resolves/labels correctly (-d @/tmp/x)
         for tok in toks[1:]:
-            if _looks_like_path(tok):
-                targets.append(Target("path", tok))
+            cand = tok[1:] if tok.startswith("@") else tok
+            if _looks_like_path(cand):
+                targets.append(Target("path", cand))
+
+    # a command whose only network activity was a GET fetch (no send, no destruction) is
+    # untrusted retrieval — same class as WebFetch, so it flows freely and taints its result
+    pure_fetch = fetched and not is_outbound and not dangerous and op == "exec"
+    tool_class = ToolClass.UNTRUSTED_RETRIEVAL if pure_fetch else ToolClass.ACTION
+    if pure_fetch:
+        op = "fetch"
 
     summary = f"bash:{op}"
     if dangerous:
@@ -183,7 +238,7 @@ def _classify_bash(command: str, policy: "Policy") -> StructuralAction:
             deduped.append(t)
     return StructuralAction(
         tool_name="Bash",
-        tool_class=ToolClass.ACTION,
+        tool_class=tool_class,
         op=op,
         targets=deduped,
         is_outbound=is_outbound,

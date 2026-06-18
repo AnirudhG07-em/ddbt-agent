@@ -71,6 +71,11 @@ class Policy:
     # `cat`/`cp`) escalates to a human instead of silently passing. Errs toward the
     # boundary (doc §3.3); flip off if escalations get noisy (the §8 tuning tension).
     escalate_out_of_scope_reads: bool = True
+    # cumulative-trajectory thresholds (doc §1 lookahead — the gap every system shares):
+    # too many outbound sends in a session = possible drip-exfil; a read-heavy session that
+    # then sends externally = the classic exfil shape. Heuristic, tune against traces.
+    max_outbound_per_session: int = 6
+    recon_read_threshold: int = 25
     # device/system paths that are harmless to touch and never trigger a boundary check
     benign_read_paths: frozenset[str] = frozenset(
         {"/dev/null", "/dev/stdout", "/dev/stderr", "/dev/zero", "/dev/urandom", "/dev/tty"}

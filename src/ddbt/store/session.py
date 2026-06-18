@@ -82,8 +82,58 @@ class SessionStore:
                 ts REAL NOT NULL, kind TEXT NOT NULL,
                 action TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending'
             );
+            CREATE TABLE IF NOT EXISTS confirmed (
+                sig TEXT PRIMARY KEY, ts REAL NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS counters (
+                key TEXT PRIMARY KEY, val INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS member_sets (
+                setname TEXT NOT NULL, member TEXT NOT NULL,
+                PRIMARY KEY (setname, member)
+            );
             """
         )
+
+    # ---- trajectory counters (cumulative session state for lookahead checks) ----
+
+    def incr(self, key: str, by: int = 1) -> int:
+        self._conn.execute(
+            "INSERT INTO counters(key,val) VALUES(?,?) "
+            "ON CONFLICT(key) DO UPDATE SET val = val + excluded.val",
+            (key, by),
+        )
+        row = self._conn.execute("SELECT val FROM counters WHERE key=?", (key,)).fetchone()
+        return int(row["val"])
+
+    def get_counter(self, key: str, default: int = 0) -> int:
+        row = self._conn.execute("SELECT val FROM counters WHERE key=?", (key,)).fetchone()
+        return int(row["val"]) if row else default
+
+    def add_member(self, setname: str, member: str) -> bool:
+        """Add to a session set; return True if it was newly added."""
+        cur = self._conn.execute(
+            "INSERT INTO member_sets(setname,member) VALUES(?,?) ON CONFLICT DO NOTHING",
+            (setname, member),
+        )
+        return cur.rowcount > 0
+
+    def set_size(self, setname: str) -> int:
+        row = self._conn.execute(
+            "SELECT COUNT(*) AS n FROM member_sets WHERE setname=?", (setname,)
+        ).fetchone()
+        return int(row["n"])
+
+    # ---- human-confirmed action signatures (gate approvals; doc §3.2) ----
+
+    def add_confirmed(self, sig: str) -> None:
+        self._conn.execute(
+            "INSERT INTO confirmed(sig,ts) VALUES(?,?) ON CONFLICT(sig) DO NOTHING",
+            (sig, time.time()),
+        )
+
+    def is_confirmed(self, sig: str) -> bool:
+        return self._conn.execute("SELECT 1 FROM confirmed WHERE sig=?", (sig,)).fetchone() is not None
 
     # ---- meta (envelope serialisation, workspace root, etc.) ----
 
