@@ -71,6 +71,26 @@ def _cmd_bench(args: argparse.Namespace) -> int:
 
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent / "bench"))
 
+    # R-Judge — static safety-judge evaluation (F1 vs gold safe/unsafe labels)
+    if args.target == "rjudge":
+        try:
+            import rjudge
+        except ImportError as exc:
+            print(f"bench deps missing — uv pip install -e '.[bench]'  ({exc})", file=sys.stderr)
+            return 2
+        data = args.data or str(pathlib.Path(__file__).resolve().parent.parent.parent / "bench" / "data" / "rjudge")
+        records = rjudge.load_rjudge(data, limit=args.limit)
+        if not records:
+            print(f"no R-Judge records under {data} (download with the tarball — see bench/)", file=sys.stderr)
+            return 2
+        try:
+            rep = rjudge.score(records, workers=args.workers)
+        except Exception as exc:
+            print(f"rjudge run failed: {exc}\n(Set ANTHROPIC_API_KEY.)", file=sys.stderr)
+            return 1
+        print(rep.render())
+        return 0
+
     # static replay — fast, no live agent, no API key
     if args.target == "static":
         try:
@@ -142,7 +162,8 @@ def build_parser() -> argparse.ArgumentParser:
     h.set_defaults(fn=_cmd_hook)
 
     b = sub.add_parser("bench", help="run a security benchmark through the ddbt defense")
-    b.add_argument("target", choices=["agentdojo", "static"], help="benchmark to run")
+    b.add_argument("target", choices=["agentdojo", "static", "rjudge"], help="benchmark to run")
+    b.add_argument("--workers", type=int, default=4, help="concurrency for static/rjudge replay (lower = fewer rate-limit errors)")
     b.add_argument("--source", choices=["agentdojo", "injecagent"], default="agentdojo", help="static-replay corpus")
     b.add_argument("--data", default=None, help="path to InjecAgent test-case JSON (for --source injecagent)")
     b.add_argument("--suite", default="workspace", help="AgentDojo suite (workspace/banking/slack/travel)")

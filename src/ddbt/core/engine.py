@@ -41,6 +41,7 @@ class Decision:
     relevant: bool = True
     harmful: bool = False
     stray: bool = False
+    error: bool = False  # judge couldn't decide (infra failure) — denied defensively, but flagged
     audit_id: int = 0
 
     @property
@@ -73,6 +74,20 @@ def _is_substantive_goal(prompt: str) -> bool:
     if p in _CONTINUATION:
         return False
     return len(re.findall(r"[a-z0-9]{3,}", p)) >= 3
+
+
+def _string_values(obj) -> list[str]:
+    """Flatten the string leaves of a tool-input structure (for provenance matching)."""
+    out: list[str] = []
+    if isinstance(obj, str):
+        out.append(obj)
+    elif isinstance(obj, dict):
+        for v in obj.values():
+            out.extend(_string_values(v))
+    elif isinstance(obj, (list, tuple)):
+        for v in obj:
+            out.extend(_string_values(v))
+    return out
 
 
 def _summarize(tool: str, tool_input: dict) -> str:
@@ -133,12 +148,13 @@ class Engine:
             goal=self.goal,
             tool=tool_name,
             args=tool_input,
-            input_labels=self._labels(),
+            input_labels=self._labels(tool_input),
             quarantined=self.store.recent_quarantine(3),
+            history=self._history(),
         )
         verdict = self.step_judge.judge(facts)
         effect = _DECISION_TO_EFFECT.get(verdict.decision, Effect.DENY)
-        checkpoint = "judge" if verdict.decision in _DECISION_TO_EFFECT else "judge-error"
+        checkpoint = "judge-error" if verdict.error else "judge"
 
         aid = self.audit.decision(
             checkpoint=checkpoint,
@@ -149,15 +165,41 @@ class Engine:
             relevant=verdict.relevant,
             harmful=verdict.harmful,
             stray=verdict.stray,
+            error=verdict.error,
         )
         return Decision(
             effect, verdict.decision, checkpoint, verdict.reason,
-            relevant=verdict.relevant, harmful=verdict.harmful, stray=verdict.stray, audit_id=aid,
+            relevant=verdict.relevant, harmful=verdict.harmful, stray=verdict.stray,
+            error=verdict.error, audit_id=aid,
         )
 
-    def _labels(self) -> list[str]:
+    def _labels(self, tool_input: dict) -> list[str]:
+        """Keyword-free provenance: flag any argument value that traces to quarantined
+        (untrusted) tool output rather than the user's goal — the decisive 'is this value
+        user-named or injection-derived?' signal. Mechanical string matching, no wordlists."""
+        labels: list[str] = []
         n = self.store.quarantine_count()
-        return [f"session has ingested {n} quarantined tool output(s)"] if n else []
+        if n:
+            labels.append(f"session has ingested {n} quarantined (untrusted) tool output(s)")
+        quarantined = " ".join(self.store.recent_quarantine(5)).lower()
+        goal = (self.goal or "").lower()
+        for val in _string_values(tool_input):
+            v = val.strip().lower()
+            if len(v) < 4:
+                continue
+            if v in goal:
+                labels.append(f"arg value {val[:60]!r} is named in the user goal → user-named")
+            elif quarantined and v in quarantined:
+                labels.append(
+                    f"arg value {val[:60]!r} traces to untrusted tool output, NOT the user goal → injection-derived"
+                )
+        return labels
+
+    def _history(self, n: int = 6) -> list[str]:
+        """Recent prior steps this session (trajectory context for the judge): what the
+        agent has already done, so the judge can tell a consistent continuation from a drift."""
+        decisions = [e for e in self.audit.trail() if e.get("kind") == "decision"]
+        return [f"{e.get('tool','')} {e.get('summary','')} → {e.get('state','')}" for e in decisions[-n:]]
 
     def record_result(self, tool_name: str, tool_input: dict, tool_response: dict, cwd: str | None = None) -> None:
         # every tool output is quarantined (untrusted-by-default) so the judge can inspect

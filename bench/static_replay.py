@@ -44,6 +44,7 @@ class ReplayReport:
     benign_clean: int = 0  # all calls ALLOW
     benign_friction: int = 0  # some ASK (gated, not blocked)
     benign_fp: int = 0  # some DENY (false positive)
+    errored: int = 0  # judge infra-failures (rate-limit/timeout) — excluded from tallies
     elapsed: float = 0.0
     missed: list = field(default_factory=list)  # attack cases that fully auto-executed (debug these)
 
@@ -65,15 +66,40 @@ class ReplayReport:
             f"  benign       : {self.n_benign}",
             f"    clean pass : {self.benign_clean}/{self.n_benign}  ({bpass:.0%})   ← utility (higher better)",
             f"    gated (ask): {self.benign_friction}    false-deny: {self.benign_fp}  ← suffocation (want 0)",
+            f"  errored      : {self.errored}   ← judge infra-failures, excluded (tune workers if high)",
         ]
         for cid, calls in self.missed[:8]:
             lines.append(f"      ✗ MISSED {cid}: {calls}")
         return "\n".join(lines)
 
 
-def replay(cases: list[Case], step_judge=None, source="corpus") -> ReplayReport:
+def _run_case(i: int, case: Case, step_judge, base: str) -> tuple[str, list, bool]:
+    """Replay one case → (label, effects, errored). errored=True if any step's verdict was a
+    judge infra-failure (rate-limit/timeout) rather than a real decision — those are excluded
+    from the security/utility tallies so transient errors don't masquerade as findings."""
+    eng = Engine(f"rp-{i}", workspace_root=base, base_dir=base, step_judge=step_judge)
+    eng.on_session_start("startup", base)
+    eng.on_user_prompt(case.goal)
+    if case.tainted:  # the attack instruction came from untrusted content → taint session
+        eng.record_result("WebFetch", {"url": "injected"}, {"content": "injection"})
+    effects, errored = [], False
+    for tool, args in case.calls:
+        d = eng.evaluate_action(tool, args or {})
+        effects.append(d.effect)
+        if d.error:
+            errored = True
+        if d.effect != Effect.DENY:
+            eng.record_result(tool, args or {}, {})
+        else:
+            break  # a blocked call stops the sequence
+    eng.close()
+    return case.label, effects, errored
+
+
+def replay(cases: list[Case], step_judge=None, source="corpus", workers: int = 4) -> ReplayReport:
     # v4: the decider is the step-judge. None → real haiku judge (needs a key); pass a stub
-    # for fast offline runs. (Static replay now drives the judge, so it's no longer free.)
+    # for fast offline runs. Cases are independent → fan out across `workers` threads (the
+    # judge is thread-safe; tune workers to your rate limit).
     if step_judge is None:
         from ddbt.judge.step_judge import AnthropicStepJudge
 
@@ -81,22 +107,17 @@ def replay(cases: list[Case], step_judge=None, source="corpus") -> ReplayReport:
     base = tempfile.mkdtemp(prefix="ddbt-replay-")
     rep = ReplayReport(source=source)
     t0 = time.monotonic()
-    for i, case in enumerate(cases):
-        eng = Engine(f"rp-{i}", workspace_root=base, base_dir=base, step_judge=step_judge)
-        eng.on_session_start("startup", base)
-        eng.on_user_prompt(case.goal)
-        if case.tainted:  # the attack instruction came from untrusted content → taint session
-            eng.record_result("WebFetch", {"url": "injected"}, {"content": "injection"})
-        effects = []
-        for tool, args in case.calls:
-            d = eng.evaluate_action(tool, args or {})
-            effects.append(d.effect)
-            if d.effect != Effect.DENY:
-                eng.record_result(tool, args or {}, {})  # ran → accumulate taint/counters
-            else:
-                break  # a blocked call stops the sequence
-        eng.close()
-        if case.label == "attack":
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        results = list(pool.map(lambda ic: (ic[1], *_run_case(ic[0], ic[1], step_judge, base)), enumerate(cases)))
+
+    for case, label, effects, errored in results:
+        if errored:
+            rep.errored += 1  # judge infra-failure — excluded from security/utility tallies
+            continue
+        if label == "attack":
             rep.n_attack += 1
             if Effect.DENY in effects:
                 rep.attack_hard_denied += 1
