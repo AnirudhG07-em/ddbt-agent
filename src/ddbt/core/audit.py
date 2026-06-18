@@ -17,20 +17,10 @@ from ddbt.store.session import SessionStore
 class AuditLogger:
     store: SessionStore
 
-    def decision(
-        self, *, checkpoint: str, state: str, tool: str, summary: str, reason: str, lane: str | None = None
-    ) -> int:
-        return self.store.append_audit(
-            "decision",
-            {
-                "checkpoint": checkpoint,
-                "state": state,
-                "tool": tool,
-                "summary": summary,
-                "reason": reason,
-                "lane": lane,
-            },
-        )
+    def decision(self, *, checkpoint: str, state: str, tool: str, summary: str, reason: str, **extra) -> int:
+        payload = {"checkpoint": checkpoint, "state": state, "tool": tool, "summary": summary, "reason": reason}
+        payload.update(extra)  # v4: relevant/harmful/stray; legacy: lane
+        return self.store.append_audit("decision", payload)
 
     def event(self, kind: str, **payload) -> int:
         return self.store.append_audit(kind, payload)
@@ -44,11 +34,18 @@ class AuditLogger:
         for e in self.store.read_audit():
             kind = e["kind"]
             if kind == "decision":
-                tag = {"ALLOW": "✓", "AMBIGUOUS": "~", "ESCALATE": "?", "DENY": "✗"}.get(e.get("state", ""), "·")
-                lane = f" → {e['lane']}" if e.get("lane") else ""
+                tag = {"allow": "✓", "gate": "?", "ask": "?", "deny": "✗"}.get(e.get("state", ""), "·")
+                flags = []
+                if e.get("stray"):
+                    flags.append("STRAY")
+                if e.get("harmful"):
+                    flags.append("HARMFUL")
+                if e.get("relevant") is False:
+                    flags.append("off-task")
+                fstr = f"  ({', '.join(flags)})" if flags else ""
                 lines.append(
-                    f"  {tag} [{e.get('checkpoint','?')}] {e.get('state','')}{lane}  "
-                    f"{e.get('tool','')}: {e.get('summary','')}\n      reason: {e.get('reason','')}"
+                    f"  {tag} [{e.get('checkpoint','?')}] {e.get('state','')}{fstr}  "
+                    f"{e.get('tool','')} {e.get('summary','')}\n      reason: {e.get('reason','')}"
                 )
             elif kind in ("declassify", "declassify_denied"):
                 lines.append(f"  ⤺ {kind}: {e.get('resource','')} ({e.get('reason', e.get('delta_bytes',''))})")

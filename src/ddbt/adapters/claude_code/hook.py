@@ -24,17 +24,15 @@ from ddbt.core.engine import Effect, Engine
 
 
 def _engine(payload: dict) -> Engine:
-    """Build the engine for a hook invocation, attaching the blind intent judge when
-    DDBT_INTENT_JUDGE is set AND a key is present. If enabled but no key, we fall back to
-    deterministic (rather than fail-closed-DENY on every judgeable action — safer UX)."""
+    """Build the engine for a hook invocation. The v4 decider is the LLM step-judge, so a
+    provider key is required; the judge fails CLOSED (deny) without one — that's the
+    judge-centric design (strict). Model overridable via DDBT_JUDGE_MODEL."""
     session_id = payload.get("session_id", "default")
     cwd = payload.get("cwd") or "."
-    intent_judge = None
-    if os.environ.get("DDBT_INTENT_JUDGE") and os.environ.get("ANTHROPIC_API_KEY"):
-        from ddbt.judge.intent import AnthropicIntentJudge
+    from ddbt.judge.step_judge import AnthropicStepJudge
 
-        intent_judge = AnthropicIntentJudge(os.environ.get("DDBT_INTENT_MODEL", "claude-haiku-4-5"))
-    return Engine(session_id, workspace_root=cwd, intent_judge=intent_judge)
+    judge = AnthropicStepJudge(os.environ.get("DDBT_JUDGE_MODEL", "claude-haiku-4-5"))
+    return Engine(session_id, workspace_root=cwd, step_judge=judge)
 
 
 def _pre_output(decision: str, reason: str = "") -> dict:

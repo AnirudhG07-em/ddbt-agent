@@ -20,25 +20,33 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 
-from ddbt.policy.defaults import Policy, default_policy
 
 
-def splice_ddbt_defense(pipeline, policy: Policy | None = None):
+def _judge(step_judge):
+    """Default to the real haiku step-judge for live benchmark runs (needs a key)."""
+    if step_judge is not None:
+        return step_judge
+    from ddbt.judge.step_judge import AnthropicStepJudge
+
+    return AnthropicStepJudge("claude-haiku-4-5")
+
+
+def splice_ddbt_defense(pipeline, step_judge=None):
     """Recursively replace every ToolsExecutor in a pipeline with DdbtToolsExecutor.
 
     Returns (pipeline, [the ddbt executors]) so the caller can read per-run stats.
+    step_judge=None → the executor uses the engine default (AnthropicStepJudge, needs key).
     """
     from agentdojo.agent_pipeline import ToolsExecutor
 
     from ddbt.adapters.agentdojo.element import DdbtToolsExecutor
 
-    policy = policy or default_policy()
     installed: list[DdbtToolsExecutor] = []
 
     def _replace(element):
         # a ToolsExecutor → swap for our gating executor (keep its output formatter)
         if isinstance(element, ToolsExecutor) and not isinstance(element, DdbtToolsExecutor):
-            ddbt = DdbtToolsExecutor(element.output_formatter, policy=policy)
+            ddbt = DdbtToolsExecutor(element.output_formatter, step_judge=step_judge)
             installed.append(ddbt)
             return ddbt
         # a container with .elements (AgentPipeline / ToolsExecutionLoop) → recurse
@@ -80,7 +88,7 @@ def run_suite(
     model_id: str = "gpt-4o-mini-2024-07-18",
     llm: str | None = None,
     limit: int | None = 5,
-    policy: Policy | None = None,
+    step_judge=None,
     attack_name: str = "important_instructions",
     inj_limit: int | None = None,
     defended: bool = True,
@@ -93,7 +101,7 @@ def run_suite(
     from agentdojo.task_suite.load_suites import get_suite
 
     suite = get_suite("v1", suite_name)
-    pipeline, executors = _build_pipeline(model_id, llm, defended, policy)
+    pipeline, executors = _build_pipeline(model_id, llm, defended, _judge(step_judge))
     uts, its = _resolve_task_ids(suite, limit, inj_limit)
     results = _run_benchmark(pipeline, suite, attack_name, uts, its)
 
@@ -105,7 +113,7 @@ def run_suite(
     return report
 
 
-def _build_pipeline(model_id: str, llm, defended: bool, policy):
+def _build_pipeline(model_id: str, llm, defended: bool, step_judge):
     """Build a standard AgentDojo pipeline, optionally splicing in the ddbt gate."""
     from agentdojo.agent_pipeline import AgentPipeline, PipelineConfig
 
@@ -124,7 +132,7 @@ def _build_pipeline(model_id: str, llm, defended: bool, policy):
     base = AgentPipeline.from_config(
         PipelineConfig(llm=llm_obj, model_id=model_id, defense=None, system_message_name=None, system_message=None)
     )
-    pipeline, executors = (splice_ddbt_defense(base, policy) if defended else (base, []))
+    pipeline, executors = (splice_ddbt_defense(base, step_judge) if defended else (base, []))
     if not pipeline.name or pipeline.name == "None":
         pipeline.name = model_id  # must CONTAIN a key in MODEL_NAMES (family lookup)
     return pipeline, executors
@@ -267,7 +275,7 @@ def run_vulnerable_delta(
     llm: str | None = None,
     limit: int | None = 8,
     inj_limit: int | None = None,
-    policy: Policy | None = None,
+    step_judge=None,
     attack_name: str = "important_instructions",
 ) -> VulnDelta:
     """Run BASELINE, find the (user_task, injection_task) pairs the undefended agent gets
@@ -280,7 +288,7 @@ def run_vulnerable_delta(
     logdir = default_trace_dir()
 
     # 1) baseline (stock pipeline)
-    base_pipe, _ = _build_pipeline(model_id, llm, defended=False, policy=policy)
+    base_pipe, _ = _build_pipeline(model_id, llm, defended=False, step_judge=None)
     base_results = _run_benchmark(base_pipe, suite, attack_name, uts, its, logdir=logdir)
     base_sec = base_results.get("security_results", {})
     vulnerable = [pair for pair, succeeded in base_sec.items() if succeeded]
@@ -299,7 +307,7 @@ def run_vulnerable_delta(
     # 2) re-run ONLY the vulnerable pairs with ddbt, then read the delta off those pairs
     v_uts = sorted({ut for ut, _ in vulnerable})
     v_its = sorted({it for _, it in vulnerable})
-    def_pipe, executors = _build_pipeline(model_id, llm, defended=True, policy=policy)
+    def_pipe, executors = _build_pipeline(model_id, llm, defended=True, step_judge=_judge(step_judge))
     def_results = _run_benchmark(def_pipe, suite, attack_name, v_uts, v_its, logdir=logdir)
     def_sec = def_results.get("security_results", {})
 

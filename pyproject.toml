@@ -6,10 +6,10 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "Anirudh Gupta" }]
-dependencies = []
+# anthropic is core: the v4 decider IS the LLM step-judge (see ARCHITECTURE.md)
+dependencies = ["anthropic>=0.40"]
 
 [project.optional-dependencies]
-judge = ["anthropic>=0.40"]
 mcp = ["mcp>=1.2"]
 bench = ["agentdojo"]
 dev = ["pytest>=8", "pytest-cov", "hypothesis>=6"]

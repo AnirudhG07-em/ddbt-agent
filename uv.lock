@@ -569,6 +569,9 @@ wheels = [
 name = "ddbt-agent"
 version = "0.1.0"
 source = { editable = "." }
+dependencies = [
+    { name = "anthropic" },
+]
 
 [package.optional-dependencies]
 bench = [
@@ -579,9 +582,6 @@ dev = [
     { name = "pytest" },
     { name = "pytest-cov" },
 ]
-judge = [
-    { name = "anthropic" },
-]
 mcp = [
     { name = "mcp" },
 ]
@@ -589,13 +589,13 @@ mcp = [
 [package.metadata]
 requires-dist = [
     { name = "agentdojo", marker = "extra == 'bench'" },
-    { name = "anthropic", marker = "extra == 'judge'", specifier = ">=0.40" },
+    { name = "anthropic", specifier = ">=0.40" },
     { name = "hypothesis", marker = "extra == 'dev'", specifier = ">=6" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.2" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
     { name = "pytest-cov", marker = "extra == 'dev'" },
 ]
-provides-extras = ["judge", "mcp", "bench", "dev"]
+provides-extras = ["mcp", "bench", "dev"]
 
 [[package]]
 name = "deepdiff"

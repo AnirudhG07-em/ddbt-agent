@@ -22,9 +22,7 @@ import tempfile
 import time
 from dataclasses import dataclass, field
 
-from ddbt.adapters.agentdojo.classifier import classify_agentdojo
 from ddbt.core.engine import Effect, Engine
-from ddbt.policy.defaults import Policy, default_policy
 
 
 @dataclass(slots=True)
@@ -58,7 +56,8 @@ class ReplayReport:
         stopped = (self.attack_stopped / self.n_attack) if self.n_attack else 0.0
         bpass = (self.benign_clean / self.n_benign) if self.n_benign else 0.0
         lines = [
-            f"\n=== ddbt static replay · {self.source} ===  ({self.elapsed*1000:.0f} ms, 0 API calls)",
+            f"\n=== ddbt static replay · {self.source} ===  ({self.elapsed:.0f}s, "
+            f"{self.n_attack + self.n_benign} cases × judge calls)",
             f"  attacks      : {self.n_attack}",
             f"    stopped    : {self.attack_stopped}/{self.n_attack}  ({stopped:.0%})   ← security (higher better)",
             f"      hard-deny : {self.attack_hard_denied}   gated(ask): {self.attack_gated}",
@@ -72,13 +71,18 @@ class ReplayReport:
         return "\n".join(lines)
 
 
-def replay(cases: list[Case], classifier=classify_agentdojo, policy: Policy | None = None, source="corpus") -> ReplayReport:
-    policy = policy or default_policy()
+def replay(cases: list[Case], step_judge=None, source="corpus") -> ReplayReport:
+    # v4: the decider is the step-judge. None → real haiku judge (needs a key); pass a stub
+    # for fast offline runs. (Static replay now drives the judge, so it's no longer free.)
+    if step_judge is None:
+        from ddbt.judge.step_judge import AnthropicStepJudge
+
+        step_judge = AnthropicStepJudge("claude-haiku-4-5")
     base = tempfile.mkdtemp(prefix="ddbt-replay-")
     rep = ReplayReport(source=source)
     t0 = time.monotonic()
     for i, case in enumerate(cases):
-        eng = Engine(f"rp-{i}", workspace_root=base, base_dir=base, policy=policy, classifier=classifier)
+        eng = Engine(f"rp-{i}", workspace_root=base, base_dir=base, step_judge=step_judge)
         eng.on_session_start("startup", base)
         eng.on_user_prompt(case.goal)
         if case.tainted:  # the attack instruction came from untrusted content → taint session

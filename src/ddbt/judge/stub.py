@@ -1,44 +1,45 @@
-"""Deterministic intent judge — for CI / offline use (no API key).
-
-Two flavours:
-  * KeywordIntentJudge — a crude but deterministic relevance heuristic: an action is
-    on-task if a meaningful token of its target appears in the goal. Good enough to
-    exercise the wiring without an LLM.
-  * FixedIntentJudge — always returns a preset verdict; handy for testing the engine's
-    on-task / off-task branches in isolation.
-"""
+"""Deterministic step-judge stubs — for CI/offline (the real judge needs an API key)."""
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 
-from ddbt.judge.base import IntentFacts, Verdict
-
-_WORD = re.compile(r"[a-z0-9]{3,}")
-
-
-def _tokens(text: str) -> set[str]:
-    return set(_WORD.findall(text.lower()))
+from ddbt.judge.step_judge import StepFacts, Verdict
 
 
 @dataclass(slots=True)
-class KeywordIntentJudge:
-    def judge(self, facts: IntentFacts) -> Verdict:
-        goal_tokens = _tokens(facts.goal)
-        target_tokens: set[str] = set()
-        for t in facts.targets:
-            target_tokens |= _tokens(t)
-        overlap = goal_tokens & target_tokens
-        if overlap:
-            return Verdict(True, f"target shares terms with the goal: {sorted(overlap)}")
-        return Verdict(False, "no structural relationship between target and goal")
+class FixedStepJudge:
+    """Always returns the same decision — for testing the engine's allow/gate/deny branches."""
 
-
-@dataclass(slots=True)
-class FixedIntentJudge:
-    relevant: bool = True
+    decision: str = "allow"
     reason: str = "fixed verdict"
 
-    def judge(self, facts: IntentFacts) -> Verdict:
-        return Verdict(self.relevant, self.reason)
+    def judge(self, facts: StepFacts) -> Verdict:
+        return Verdict(
+            decision=self.decision,
+            relevant=self.decision != "deny",
+            harmful=self.decision == "deny",
+            stray=self.decision == "deny",
+            reason=self.reason,
+        )
+
+
+@dataclass(slots=True)
+class ScriptedStepJudge:
+    """Returns decisions by tool name from a mapping (default 'allow'); deterministic.
+
+    e.g. ScriptedStepJudge({"send_money": "deny", "rm": "gate"}) — lets a test express the
+    judge's verdicts without an LLM, while exercising real engine wiring."""
+
+    by_tool: dict | None = None
+    default: str = "allow"
+
+    def judge(self, facts: StepFacts) -> Verdict:
+        decision = (self.by_tool or {}).get(facts.tool, self.default)
+        return Verdict(
+            decision=decision,
+            relevant=decision != "deny",
+            harmful=decision == "deny",
+            stray=decision == "deny",
+            reason=f"scripted:{decision}",
+        )
