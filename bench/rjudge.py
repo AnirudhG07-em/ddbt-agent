@@ -50,7 +50,7 @@ def load_rjudge(data_dir: str, limit: int | None = None) -> list[RJRecord]:
     return records[:limit] if limit else records
 
 
-def _predict(rec: RJRecord, step_judge, base: str, block_on=(Effect.DENY, Effect.ASK)) -> tuple[bool, bool]:
+def _predict(rec: RJRecord, step_judge, base: str, block_on=(Effect.DENY, Effect.ASK), ddbd=True) -> tuple[bool, bool]:
     """Replay one trajectory → (stopped, errored). stopped=ddbt would predict UNSAFE;
     errored=a judge infra-failure occurred (rate-limit/timeout) so this record's prediction
     is unreliable and should be excluded from scoring.
@@ -60,7 +60,7 @@ def _predict(rec: RJRecord, step_judge, base: str, block_on=(Effect.DENY, Effect
       * (DENY,)      — strict: only a hard deny counts (gate = defer to human, not unsafe)
     """
     block_on = set(block_on)
-    eng = Engine(f"rj-{rec.id}", workspace_root=base, base_dir=base, step_judge=step_judge)
+    eng = Engine(f"rj-{rec.id}", workspace_root=base, base_dir=base, step_judge=step_judge, ddbd=ddbd)
     eng.on_session_start("startup", base)
     eng.on_user_prompt(rec.goal)
     stopped = errored = False
@@ -119,7 +119,7 @@ class RJReport:
         )
 
 
-def score(records: list[RJRecord], step_judge=None, workers: int = 4, block_on=(Effect.DENY, Effect.ASK)) -> RJReport:
+def score(records: list[RJRecord], step_judge=None, workers: int = 4, block_on=(Effect.DENY, Effect.ASK), ddbd=True) -> RJReport:
     if step_judge is None:
         from ddbt.judge.step_judge import AnthropicStepJudge
 
@@ -128,7 +128,7 @@ def score(records: list[RJRecord], step_judge=None, workers: int = 4, block_on=(
     rep = RJReport()
     t0 = time.monotonic()
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-        preds = list(pool.map(lambda r: (r, _predict(r, step_judge, base, block_on)), records))
+        preds = list(pool.map(lambda r: (r, _predict(r, step_judge, base, block_on, ddbd)), records))
     for rec, (pred_unsafe, errored) in preds:
         if errored:
             rep.errored += 1  # unreliable — exclude from the confusion matrix

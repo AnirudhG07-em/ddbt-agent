@@ -101,11 +101,13 @@ def _summarize(tool: str, tool_input: dict) -> str:
 
 
 class Engine:
-    def __init__(self, session_id, workspace_root, base_dir=None, step_judge=None, **_legacy):
-        # **_legacy swallows removed params (policy/classifier/judge/intent_judge) so older
-        # adapters keep importing; the v4 decider is the step_judge only.
+    def __init__(self, session_id, workspace_root, base_dir=None, step_judge=None, ddbd=True, **_legacy):
+        # ddbd=True enables AXIS 2 (the "Don't Do Bad Things" ethics/harm layer). Axis 1
+        # (goal-fidelity / anti-injection) is ALWAYS on. Benchmarks measuring operational
+        # safety (e.g. R-Judge) set ddbd=False to isolate axis 1.
         self.session_id = session_id
         self.workspace_root = workspace_root
+        self.ddbd = ddbd
         self.store = SessionStore(session_id, base_dir=base_dir)
         self.audit = AuditLogger(self.store)
         self.step_judge = step_judge or AnthropicStepJudge()
@@ -153,25 +155,38 @@ class Engine:
             history=self._history(),
         )
         verdict = self.step_judge.judge(facts)
-        effect = _DECISION_TO_EFFECT.get(verdict.decision, Effect.DENY)
-        checkpoint = "judge-error" if verdict.error else "judge"
+        effect, checkpoint = self._combine(verdict)
 
         aid = self.audit.decision(
             checkpoint=checkpoint,
-            state=verdict.decision,
+            state=effect.value,
             tool=tool_name,
             summary=_summarize(tool_name, tool_input),
             reason=verdict.reason,
-            relevant=verdict.relevant,
+            relevant=verdict.serves_goal,
             harmful=verdict.harmful,
-            stray=verdict.stray,
+            stray=verdict.deviation,
             error=verdict.error,
         )
         return Decision(
-            effect, verdict.decision, checkpoint, verdict.reason,
-            relevant=verdict.relevant, harmful=verdict.harmful, stray=verdict.stray,
+            effect, effect.value, checkpoint, verdict.reason,
+            relevant=verdict.serves_goal, harmful=verdict.harmful, stray=verdict.deviation,
             error=verdict.error, audit_id=aid,
         )
+
+    def _combine(self, verdict) -> tuple[Effect, str]:
+        """Combine the two axes into a decision (the ddbd policy lives here).
+        Axis 1 (deviation) ALWAYS hard-denies; axis 2 (harm) denies only when ddbd is on;
+        on-goal high-impact gates; otherwise allow."""
+        if verdict.error:
+            return Effect.DENY, "judge-error"
+        if verdict.deviation:
+            return Effect.DENY, "goal-fidelity"  # axis 1 — anti-injection, non-negotiable
+        if self.ddbd and verdict.harmful:
+            return Effect.DENY, "ethics"  # axis 2 — only when ddbd enabled
+        if verdict.high_impact:
+            return Effect.ASK, "gate"  # on-goal but high-impact → ask a human
+        return Effect.ALLOW, "judge"
 
     def _labels(self, tool_input: dict) -> list[str]:
         """Keyword-free provenance: flag any argument value that traces to quarantined
