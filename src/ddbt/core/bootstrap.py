@@ -2,8 +2,8 @@
 
 Runs before the agent loop (and, as a bonus over the doc, on ``ConfigChange`` /
 ``FileChanged`` for continuous verification). Catches supply-chain / config attacks
-that happen *before* any runtime checkpoint can see them. Zero LLM — pure hashing
-and regex.
+that happen *before* any runtime checkpoint can see them. The hot path is zero-LLM —
+pure hashing; the only optional LLM call is the hash-gated semantic description scan.
 
 Three checks:
   1. Config integrity — hash guarded config (``.claude/settings.json``, ``.mcp.json``,
@@ -11,8 +11,12 @@ Three checks:
      or first-sight of config that sets network endpoints / lifecycle shell → HOLD.
   2. MCP manifest hash — hash each MCP server entry + its full tool-description JSON;
      drift → HOLD (kills rug-pull / cross-session tool poisoning).
-  3. Tool-description scan — regex for embedded instructions (``SYSTEM:``,
-     "ignore previous", imperative-at-model, zero-width chars, long base64).
+  3. Tool-description scan — TWO layers, no keyword/phrase matching:
+       (a) mechanical obfuscation only (zero-width unicode, base64-encoded text) — the
+           structural signals an LLM can't see; zero-LLM (``scan_text``).
+       (b) hash-gated SEMANTIC poison scan (``semantic_scan``) — an optional LLM
+           classifier ("describe vs instruct") keyed and cached by content hash, so an
+           unchanged description is scanned at most once ever (steady state: 0 LLM).
 """
 
 from __future__ import annotations
@@ -34,20 +38,12 @@ GUARDED_CONFIG = (
     ".claude/hooks.json",
 )
 
-# patterns that should never appear in a tool description / config (injection markers)
-_INJECTION_PATTERNS = (
-    re.compile(r"ignore (all )?previous", re.IGNORECASE),
-    re.compile(r"\bsystem\s*:", re.IGNORECASE),
-    re.compile(r"disregard (the )?(above|prior)", re.IGNORECASE),
-    re.compile(r"you (must|should) (now )?(always )?(send|exfiltrat|forward|post)", re.IGNORECASE),
-    re.compile(r"<\s*important\s*>", re.IGNORECASE),
-    # secrecy/hide-from-user phrasing — strong poison signal, rare in benign descriptions.
-    # Broadened to catch line-jumping ("no need to mention this to the user") and "don't notify".
-    re.compile(r"(do not|don't|never|no need to)\s+(tell|mention|inform|notify)", re.IGNORECASE),
-    re.compile(r"without (further explanation|(telling|informing|notifying) (the )?user)", re.IGNORECASE),
-)
+# Phrase/keyword injection patterns were REMOVED (MCPTox: ~2% detection — brittle and
+# trivially reworded). Semantic poison detection is now the (hash-gated) scanner's job.
+# We keep only MECHANICAL OBFUSCATION detectors — the structural signals an LLM can't see:
+# invisible unicode, and base64-encoded text smuggled into a description.
 _ZERO_WIDTH = re.compile(r"[​‌‍⁠﻿]")
-_BASE64_BLOB = re.compile(r"[A-Za-z0-9+/]{60,}={0,2}")
+_BASE64_BLOB = re.compile(r"[A-Za-z0-9+/]{24,}={0,2}")
 # config keys that must never auto-load — they redirect network or run shell
 _DANGEROUS_CONFIG_KEYS = ("base_url", "baseurl", "anthropic_base_url", "env", "command", "hooks")
 
@@ -87,21 +83,22 @@ def _hash_file(path: Path) -> str:
 
 
 def scan_text(text: str, where: str) -> list[Finding]:
-    """LLM-free heuristic scan for embedded instructions / obfuscation."""
+    """LLM-free MECHANICAL obfuscation scan only (no keyword/phrase matching — that was
+    removed). Catches the structural signals an LLM is blind to: invisible unicode, and
+    base64 that decodes to a readable message hidden in the text. Semantic poison detection
+    is handled by semantic_scan() with the (hash-gated) description scanner."""
     findings: list[Finding] = []
-    for pat in _INJECTION_PATTERNS:
-        if pat.search(text):
-            findings.append(Finding("hold", "tool_poisoning", f"injection marker in {where}: /{pat.pattern}/"))
     if _ZERO_WIDTH.search(text):
         findings.append(Finding("hold", "obfuscation", f"zero-width characters in {where}"))
     for m in _BASE64_BLOB.finditer(text):
-        blob = m.group(0)
         try:
-            decoded = base64.b64decode(blob, validate=True).decode("utf-8", "ignore")
-        except (binascii.Error, ValueError):
+            decoded = base64.b64decode(m.group(0), validate=True).decode("utf-8")
+        except (binascii.Error, ValueError, UnicodeDecodeError):
             continue
-        if any(p.search(decoded) for p in _INJECTION_PATTERNS):
-            findings.append(Finding("hold", "obfuscation", f"base64-encoded instruction in {where}"))
+        # flag only if it decodes to a readable message (a hidden instruction), not a
+        # random token/hash (which decodes to non-printable bytes) → keeps false positives low
+        if len(decoded) >= 12 and sum(c.isprintable() or c.isspace() for c in decoded) / len(decoded) > 0.85:
+            findings.append(Finding("hold", "obfuscation", f"base64-encoded text in {where}"))
     return findings
 
 
@@ -111,11 +108,12 @@ def _scan_cache_path() -> Path:
 
 
 def semantic_scan(text: str, where: str, scanner=None) -> list[Finding]:
-    """Regex pre-filter, then a HASH-GATED semantic scan of `text` (a tool description).
+    """Mechanical obfuscation check, then a HASH-GATED semantic scan of `text` (a tool desc).
 
-    The regex is the free fast-path; if it fires, no LLM is needed. Otherwise — only when a
-    scanner is supplied — run the model classifier, but key its verdict by content hash and
-    cache it, so identical/unchanged descriptions are never re-scanned (steady state: 0 LLM).
+    scan_text (zero-width / base64) is the free fast-path; if it fires, no LLM is needed.
+    Otherwise — only when a scanner is supplied — run the model classifier, but key its verdict
+    by content hash and cache it, so identical/unchanged descriptions are never re-scanned
+    (steady state: 0 LLM). The runtime step-judge is the backstop when no scanner is wired.
     """
     findings = scan_text(text, where)
     if findings or scanner is None or not text.strip():

@@ -96,5 +96,5 @@ def test_every_decision_is_audited(make_engine):
     eng.evaluate_action("send_money", {"to": "x"})
     decisions = [e for e in eng.audit.trail() if e["kind"] == "decision"]
     assert len(decisions) == 2
-    assert any(d["state"] == "deny" and d.get("stray") for d in decisions)
+    assert any(d["state"] == "deny" and d.get("deviation") for d in decisions)
     eng.close()

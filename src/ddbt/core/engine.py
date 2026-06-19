@@ -213,7 +213,15 @@ class Engine:
 
     def _strictness(self) -> int:
         s = self._suspicion()
-        return 0 if s < 3 else (1 if s < 7 else 2)
+        computed = 0 if s < 3 else (1 if s < 7 else 2)
+        # RATCHET: strictness only ever rises (new = max(old, new)). Once a session has
+        # tightened, a continuation ("continue with operation") or any future suspicion-decay
+        # can never lower the guard within that session.
+        floor = int(self.store.get_meta("strictness_floor", "0") or "0")
+        level = max(computed, floor)
+        if level > floor:
+            self.store.set_meta("strictness_floor", str(level))
+        return level
 
     def _bump_suspicion(self, verdict) -> None:
         w = sum(wt for sig, wt in self._SUSPICION_WEIGHTS.items() if getattr(verdict, sig, False))

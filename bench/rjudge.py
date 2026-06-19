@@ -50,10 +50,11 @@ def load_rjudge(data_dir: str, limit: int | None = None) -> list[RJRecord]:
     return records[:limit] if limit else records
 
 
-def _predict(rec: RJRecord, step_judge, base: str, block_on=(Effect.DENY, Effect.ASK), ddbd=True) -> tuple[bool, bool]:
-    """Replay one trajectory → (stopped, errored). stopped=ddbt would predict UNSAFE;
+def _predict(rec: RJRecord, step_judge, base: str, block_on=(Effect.DENY, Effect.ASK), ddbd=True) -> tuple[bool, bool, str]:
+    """Replay one trajectory → (stopped, errored, detail). stopped=ddbt would predict UNSAFE;
     errored=a judge infra-failure occurred (rate-limit/timeout) so this record's prediction
-    is unreliable and should be excluded from scoring.
+    is unreliable and should be excluded from scoring; detail=the deciding step's
+    checkpoint+reason (for diagnosing false positives).
 
     block_on maps our 3-way verdict to R-Judge's binary:
       * (DENY, ASK)  — lenient: a human gate also counts as "stopped" (max recall)
@@ -64,6 +65,7 @@ def _predict(rec: RJRecord, step_judge, base: str, block_on=(Effect.DENY, Effect
     eng.on_session_start("startup", base)
     eng.on_user_prompt(rec.goal)
     stopped = errored = False
+    detail = ""
     try:
         for turn in rec.turns:
             role = turn.get("role")
@@ -79,12 +81,13 @@ def _predict(rec: RJRecord, step_judge, base: str, block_on=(Effect.DENY, Effect
                     break  # unreliable — don't score this record
                 if d.effect in block_on:
                     stopped = True
+                    detail = f"[{d.checkpoint}/{d.effect.value}] {tool}: {d.reason}"
                     break  # a stopped step halts the trajectory
             elif role == "environment":
                 eng.record_result("environment", {}, {"content": str(turn.get("content", ""))})
     finally:
         eng.close()
-    return stopped, errored
+    return stopped, errored, detail
 
 
 @dataclass(slots=True)
@@ -96,7 +99,8 @@ class RJReport:
     fn: int = 0
     errored: int = 0  # records with a judge infra-failure — excluded from scoring
     elapsed: float = 0.0
-    missed: list = field(default_factory=list)  # unsafe records ddbt let through
+    missed: list = field(default_factory=list)  # unsafe records ddbt let through (FN)
+    false_pos: list = field(default_factory=list)  # safe records ddbt flagged (FP) — (id, detail)
 
     def _f(self, a, b):
         return a / b if b else 0.0
@@ -116,6 +120,7 @@ class RJReport:
             f"  confusion    : TP={self.tp} FP={self.fp} TN={self.tn} FN={self.fn}\n"
             f"  errored      : {self.errored}   ← judge infra-failures, excluded (tune --workers if high)\n"
             + "".join(f"      ✗ MISSED unsafe rec {i}\n" for i in self.missed[:8])
+            + "".join(f"      ⚠ FALSE-POS (safe flagged) rec {i}: {dt}\n" for i, dt in self.false_pos[:15])
         )
 
 
@@ -129,7 +134,7 @@ def score(records: list[RJRecord], step_judge=None, workers: int = 4, block_on=(
     t0 = time.monotonic()
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
         preds = list(pool.map(lambda r: (r, _predict(r, step_judge, base, block_on, ddbd)), records))
-    for rec, (pred_unsafe, errored) in preds:
+    for rec, (pred_unsafe, errored, detail) in preds:
         if errored:
             rep.errored += 1  # unreliable — exclude from the confusion matrix
             continue
@@ -139,6 +144,7 @@ def score(records: list[RJRecord], step_judge=None, workers: int = 4, block_on=(
             rep.tp += 1
         elif pred_unsafe and not gold_unsafe:
             rep.fp += 1
+            rep.false_pos.append((rec.id, detail))
         elif not pred_unsafe and not gold_unsafe:
             rep.tn += 1
         else:

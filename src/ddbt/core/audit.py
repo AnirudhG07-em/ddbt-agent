@@ -36,12 +36,17 @@ class AuditLogger:
             if kind == "decision":
                 tag = {"allow": "✓", "gate": "?", "ask": "?", "deny": "✗"}.get(e.get("state", ""), "·")
                 flags = []
-                if e.get("stray"):
-                    flags.append("STRAY")
+                if e.get("deviation"):
+                    flags.append("DEVIATION")
                 if e.get("harmful"):
                     flags.append("HARMFUL")
-                if e.get("relevant") is False:
-                    flags.append("off-task")
+                if e.get("serves_goal") is False:
+                    flags.append("off-goal")
+                for sig in ("requests_secrecy", "side_task", "external_exfil", "injection_suspected"):
+                    if e.get(sig):
+                        flags.append(sig)
+                if e.get("strictness"):
+                    flags.append(f"strict={e['strictness']}")
                 fstr = f"  ({', '.join(flags)})" if flags else ""
                 lines.append(
                     f"  {tag} [{e.get('checkpoint','?')}] {e.get('state','')}{fstr}  "
