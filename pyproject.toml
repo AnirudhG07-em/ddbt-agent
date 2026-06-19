@@ -12,6 +12,10 @@ dependencies = ["anthropic>=0.40"]
 [project.optional-dependencies]
 mcp = ["mcp>=1.2"]
 bench = ["agentdojo"]
+# AgentDyn is a hard fork of AgentDojo published under the SAME `agentdojo` import name,
+# so installing it REPLACES the upstream `bench` agentdojo — use one or the other env.
+# It adds the shopping/github/dailylife suites and keeps the originals.
+agentdyn = ["agentdojo @ git+https://github.com/leolee99/AgentDyn.git"]
 dev = ["pytest>=8", "pytest-cov", "hypothesis>=6"]
 
 [project.scripts]
@@ -20,6 +24,10 @@ ddbt = "ddbt.cli:main"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+# the `agentdyn` extra installs AgentDyn via a direct git reference (it has no PyPI release)
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/ddbt"]

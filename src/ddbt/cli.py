@@ -71,6 +71,10 @@ def _cmd_bench(args: argparse.Namespace) -> int:
 
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent / "bench"))
 
+    # AgentDyn is a drop-in fork of AgentDojo (same `agentdojo` import) — default to its
+    # primary suite when the target is agentdyn and no --suite was given.
+    suite = args.suite or ("shopping" if args.target == "agentdyn" else "workspace")
+
     # R-Judge — static safety-judge evaluation (F1 vs gold safe/unsafe labels)
     if args.target == "rjudge":
         try:
@@ -104,14 +108,16 @@ def _cmd_bench(args: argparse.Namespace) -> int:
                 return 2
             cases = sr.load_injecagent(args.data)
         else:
-            cases = sr.load_agentdojo(args.suite, limit=args.limit)
-        rep = sr.replay(cases, source=f"{args.source}:{args.suite}" if args.source == "agentdojo" else "injecagent")
+            cases = sr.load_agentdojo(suite, limit=args.limit)
+        rep = sr.replay(cases, source=f"{args.source}:{suite}" if args.source == "agentdojo" else "injecagent")
         print(rep.render())
         return 0
 
-    if args.target != "agentdojo":
+    # live agent suite — AgentDojo, or its drop-in fork AgentDyn (same harness, new suites)
+    if args.target not in ("agentdojo", "agentdyn"):
         print(f"unknown benchmark target: {args.target}", file=sys.stderr)
         return 2
+    benchmark = "AgentDyn" if args.target == "agentdyn" else "AgentDojo"
     try:
         from harness import run_suite, run_vulnerable_delta
     except ImportError as exc:
@@ -120,15 +126,17 @@ def _cmd_bench(args: argparse.Namespace) -> int:
     try:
         if args.only_vulnerable:
             report = run_vulnerable_delta(
-                suite_name=args.suite, model_id=args.model, limit=args.limit, inj_limit=args.inj_limit
+                suite_name=suite, model_id=args.model, limit=args.limit, inj_limit=args.inj_limit,
+                benchmark=benchmark,
             )
         else:
             report = run_suite(
-                suite_name=args.suite,
+                suite_name=suite,
                 model_id=args.model,
                 limit=args.limit,
                 inj_limit=args.inj_limit,
                 defended=not args.no_defense,
+                benchmark=benchmark,
             )
     except Exception as exc:  # most commonly a missing API key / model backend
         print(f"benchmark run failed: {exc}\n(Set the provider API key, e.g. OPENAI_API_KEY.)", file=sys.stderr)
@@ -162,11 +170,13 @@ def build_parser() -> argparse.ArgumentParser:
     h.set_defaults(fn=_cmd_hook)
 
     b = sub.add_parser("bench", help="run a security benchmark through the ddbt defense")
-    b.add_argument("target", choices=["agentdojo", "static", "rjudge"], help="benchmark to run")
+    b.add_argument("target", choices=["agentdojo", "agentdyn", "static", "rjudge"], help="benchmark to run")
     b.add_argument("--workers", type=int, default=4, help="concurrency for static/rjudge replay (lower = fewer rate-limit errors)")
     b.add_argument("--source", choices=["agentdojo", "injecagent"], default="agentdojo", help="static-replay corpus")
     b.add_argument("--data", default=None, help="path to InjecAgent test-case JSON (for --source injecagent)")
-    b.add_argument("--suite", default="workspace", help="AgentDojo suite (workspace/banking/slack/travel)")
+    b.add_argument("--suite", default=None,
+                   help="suite (AgentDojo: workspace/banking/slack/travel; AgentDyn: shopping/github/dailylife). "
+                        "Default: workspace, or shopping for the agentdyn target")
     b.add_argument("--model", default="gpt-4o-mini-2024-07-18", help="model id (provider is derived from it)")
     b.add_argument("--limit", type=int, default=5, help="max user tasks")
     b.add_argument("--inj-limit", type=int, default=None, help="max injection tasks per user task (cheap smoke: 2-3)")

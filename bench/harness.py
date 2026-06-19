@@ -62,6 +62,7 @@ def splice_ddbt_defense(pipeline, step_judge=None):
 class BenchReport:
     suite: str
     model: str
+    benchmark: str = "AgentDojo"  # "AgentDojo" or "AgentDyn" — same harness, different suites
     defended: bool = True
     n_user_tasks: int = 0
     n_cases: int = 0
@@ -73,7 +74,7 @@ class BenchReport:
     def render(self) -> str:
         mode = "ddbt-defended" if self.defended else "BASELINE (no defense)"
         return (
-            f"\n=== {mode} × AgentDojo · suite={self.suite} model={self.model} ===\n"
+            f"\n=== {mode} × {self.benchmark} · suite={self.suite} model={self.model} ===\n"
             f"  user tasks      : {self.n_user_tasks}\n"
             f"  cases (w/ inj.) : {self.n_cases}\n"
             f"  utility         : {self.utility:.1%}   (task completion; higher better)\n"
@@ -92,8 +93,13 @@ def run_suite(
     attack_name: str = "important_instructions",
     inj_limit: int | None = None,
     defended: bool = True,
+    benchmark: str = "AgentDojo",
 ) -> BenchReport:
-    """Run an AgentDojo suite through the ddbt-defended pipeline. Needs an API key.
+    """Run an AgentDojo/AgentDyn suite through the ddbt-defended pipeline. Needs an API key.
+
+    AgentDyn is a drop-in fork of AgentDojo (same ``agentdojo`` import, extra suites
+    ``shopping``/``github``/``dailylife``), so the same harness drives both — pass the suite
+    name and set ``benchmark`` only to label the report.
 
     AgentDojo derives the provider from the model name, so ``llm`` and ``model_id`` are
     both the model id (e.g. ``gpt-4o-mini-2024-07-18``, ``claude-3-5-sonnet-20240620``).
@@ -106,6 +112,7 @@ def run_suite(
     results = _run_benchmark(pipeline, suite, attack_name, uts, its)
 
     report = _aggregate(results, suite_name, model_id)
+    report.benchmark = benchmark
     report.defended = defended
     report.ddbt_blocks = sum(e.stats["blocked"] for e in executors)
     for e in executors:
@@ -226,6 +233,7 @@ def _aggregate(results, suite_name: str, model_id: str) -> BenchReport:
 class VulnDelta:
     suite: str
     model: str
+    benchmark: str = "AgentDojo"  # "AgentDojo" or "AgentDyn"
     baseline_cases: int = 0
     baseline_asr: float = 0.0
     vulnerable_pairs: list = field(default_factory=list)  # (user_task, injection_task) baseline lost
@@ -243,14 +251,14 @@ class VulnDelta:
         n = len(self.vulnerable_pairs)
         if n == 0:
             return (
-                f"\n=== ddbt vulnerability delta · suite={self.suite} model={self.model} ===\n"
+                f"\n=== ddbt vulnerability delta · {self.benchmark} · suite={self.suite} model={self.model} ===\n"
                 f"  baseline: {self.baseline_cases} cases, ASR {self.baseline_asr:.0%}\n"
                 f"  → the model wasn't hijacked on this slice (nothing for ddbt to defend).\n"
                 f"    widen scope (more --limit / --inj-limit) to find vulnerable pairs."
             )
         defended_asr = self.defended_still_succeeds / n
         lines = [
-            f"\n=== ddbt vulnerability delta · suite={self.suite} model={self.model} ===",
+            f"\n=== ddbt vulnerability delta · {self.benchmark} · suite={self.suite} model={self.model} ===",
             f"  baseline    : {self.baseline_cases} cases, ASR {self.baseline_asr:.0%}",
             f"  vulnerable  : {n} pair(s) the UNDEFENDED agent got hijacked on (baseline ASR=100% on these)",
             f"  re-ran those {n} WITH ddbt:",
@@ -277,9 +285,13 @@ def run_vulnerable_delta(
     inj_limit: int | None = None,
     step_judge=None,
     attack_name: str = "important_instructions",
+    benchmark: str = "AgentDojo",
 ) -> VulnDelta:
     """Run BASELINE, find the (user_task, injection_task) pairs the undefended agent gets
     hijacked on, then re-run ONLY those with ddbt — so the security delta is unmistakable.
+
+    Drives AgentDojo or its drop-in fork AgentDyn identically; ``benchmark`` only labels
+    the report.
     """
     from agentdojo.task_suite.load_suites import get_suite
 
@@ -296,6 +308,7 @@ def run_vulnerable_delta(
     delta = VulnDelta(
         suite=suite_name,
         model=model_id,
+        benchmark=benchmark,
         baseline_cases=len(base_sec),
         baseline_asr=(sum(1 for v in base_sec.values() if v) / len(base_sec)) if base_sec else 0.0,
         vulnerable_pairs=vulnerable,
