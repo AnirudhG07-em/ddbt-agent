@@ -41,7 +41,10 @@ _INJECTION_PATTERNS = (
     re.compile(r"disregard (the )?(above|prior)", re.IGNORECASE),
     re.compile(r"you (must|should) (now )?(always )?(send|exfiltrat|forward|post)", re.IGNORECASE),
     re.compile(r"<\s*important\s*>", re.IGNORECASE),
-    re.compile(r"do not (tell|mention|inform) the user", re.IGNORECASE),
+    # secrecy/hide-from-user phrasing — strong poison signal, rare in benign descriptions.
+    # Broadened to catch line-jumping ("no need to mention this to the user") and "don't notify".
+    re.compile(r"(do not|don't|never|no need to)\s+(tell|mention|inform|notify)", re.IGNORECASE),
+    re.compile(r"without (further explanation|(telling|informing|notifying) (the )?user)", re.IGNORECASE),
 )
 _ZERO_WIDTH = re.compile(r"[​‌‍⁠﻿]")
 _BASE64_BLOB = re.compile(r"[A-Za-z0-9+/]{60,}={0,2}")
@@ -102,7 +105,44 @@ def scan_text(text: str, where: str) -> list[Finding]:
     return findings
 
 
-def _scan_mcp(config_path: Path) -> list[Finding]:
+def _scan_cache_path() -> Path:
+    root = os.environ.get("DDBT_HOME") or os.path.join(os.path.expanduser("~"), ".ddbt")
+    return Path(root) / "desc_scan_cache.json"
+
+
+def semantic_scan(text: str, where: str, scanner=None) -> list[Finding]:
+    """Regex pre-filter, then a HASH-GATED semantic scan of `text` (a tool description).
+
+    The regex is the free fast-path; if it fires, no LLM is needed. Otherwise — only when a
+    scanner is supplied — run the model classifier, but key its verdict by content hash and
+    cache it, so identical/unchanged descriptions are never re-scanned (steady state: 0 LLM).
+    """
+    findings = scan_text(text, where)
+    if findings or scanner is None or not text.strip():
+        return findings
+    from ddbt.judge.desc_scanner import _dump, _load, cache_key
+
+    key = cache_key(text)
+    cache_file = _scan_cache_path()
+    cache: dict = {}
+    if cache_file.exists():
+        try:
+            cache = json.loads(cache_file.read_text())
+        except (OSError, json.JSONDecodeError):
+            cache = {}
+    if key in cache:
+        v = _load(cache[key])
+    else:
+        v = scanner.scan(text)
+        cache[key] = _dump(v)
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
+        cache_file.write_text(json.dumps(cache))
+    if v.poison:
+        findings.append(Finding("hold", "tool_poisoning_semantic", f"{v.kind}: {v.reason} ({where})"))
+    return findings
+
+
+def _scan_mcp(config_path: Path, scanner=None) -> list[Finding]:
     findings: list[Finding] = []
     try:
         data = json.loads(config_path.read_text())
@@ -113,12 +153,13 @@ def _scan_mcp(config_path: Path) -> list[Finding]:
         findings += scan_text(json.dumps(spec), f"mcp server '{name}'")
         for tool in spec.get("tools", []) if isinstance(spec, dict) else []:
             desc = tool.get("description", "") if isinstance(tool, dict) else ""
-            findings += scan_text(desc, f"mcp tool '{name}.{tool.get('name','?')}'")
+            findings += semantic_scan(desc, f"mcp tool '{name}.{tool.get('name','?')}'", scanner)
     return findings
 
 
-def verify(project_dir: str) -> BootstrapResult:
-    """Run Boundary 0 over a project directory."""
+def verify(project_dir: str, scanner=None) -> BootstrapResult:
+    """Run Boundary 0 over a project directory. `scanner` (optional) enables the hash-gated
+    semantic tool-description scan; without it, only the regex pre-filter runs (zero-LLM)."""
     project = Path(project_dir)
     baseline = _baseline_dir(project_dir)
     findings: list[Finding] = []
@@ -136,7 +177,7 @@ def verify(project_dir: str) -> BootstrapResult:
         except OSError:
             pass
         if rel.endswith(".mcp.json") or rel.endswith("mcp.json"):
-            findings += _scan_mcp(f)
+            findings += _scan_mcp(f, scanner)
 
         if not base_file.exists():
             # first sight: HOLD if it carries dangerous keys (network/shell at lifecycle)

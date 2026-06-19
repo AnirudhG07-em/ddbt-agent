@@ -155,7 +155,10 @@ class Engine:
             history=self._history(),
         )
         verdict = self.step_judge.judge(facts)
-        effect, checkpoint = self._combine(verdict)
+        strictness = self._strictness()  # derived from suspicion accumulated by PRIOR steps
+        effect, checkpoint = self._combine(verdict, strictness)
+        if not verdict.error:
+            self._bump_suspicion(verdict)  # this step's checklist tightens FUTURE steps
 
         aid = self.audit.decision(
             checkpoint=checkpoint,
@@ -163,10 +166,10 @@ class Engine:
             tool=tool_name,
             summary=_summarize(tool_name, tool_input),
             reason=verdict.reason,
-            relevant=verdict.serves_goal,
-            harmful=verdict.harmful,
-            stray=verdict.deviation,
             error=verdict.error,
+            strictness=strictness,
+            suspicion=self._suspicion(),
+            **verdict.signals(),  # the full diagnostic checklist (data-gathering)
         )
         return Decision(
             effect, effect.value, checkpoint, verdict.reason,
@@ -174,19 +177,48 @@ class Engine:
             error=verdict.error, audit_id=aid,
         )
 
-    def _combine(self, verdict) -> tuple[Effect, str]:
-        """Combine the two axes into a decision (the ddbd policy lives here).
-        Axis 1 (deviation) ALWAYS hard-denies; axis 2 (harm) denies only when ddbd is on;
-        on-goal high-impact gates; otherwise allow."""
+    def _combine(self, verdict, strictness: int = 0) -> tuple[Effect, str]:
+        """Combine the checklist into a decision. Axis 1 (deviation) ALWAYS hard-denies; axis 2
+        (harm) denies when ddbd is on; then adaptive strictness — a session that has shown
+        malicious signals (high suspicion) progressively tightens toward lockdown."""
         if verdict.error:
             return Effect.DENY, "judge-error"
         if verdict.deviation:
             return Effect.DENY, "goal-fidelity"  # axis 1 — anti-injection, non-negotiable
         if self.ddbd and verdict.harmful:
             return Effect.DENY, "ethics"  # axis 2 — only when ddbd enabled
+        soft = verdict.requests_secrecy or verdict.side_task or verdict.injection_suspected
+        if strictness >= 2:  # LOCKED — the session looks compromised
+            if verdict.high_impact or soft:
+                return Effect.DENY, "locked"
+            return Effect.ALLOW, "judge"
+        if strictness == 1:  # ELEVATED — tighten the gates
+            if verdict.high_impact:
+                return Effect.DENY, "elevated"  # was gate, now hard-deny
+            if soft:
+                return Effect.ASK, "elevated-gate"
+            return Effect.ALLOW, "judge"
+        # NORMAL
         if verdict.high_impact:
             return Effect.ASK, "gate"  # on-goal but high-impact → ask a human
         return Effect.ALLOW, "judge"
+
+    # ---- adaptive session suspicion (progressive enforcement) ----
+
+    _SUSPICION_WEIGHTS = {"harmful": 3, "deviation": 2, "requests_secrecy": 2,
+                          "injection_suspected": 2, "external_exfil": 1, "side_task": 1}
+
+    def _suspicion(self) -> int:
+        return int(self.store.get_meta("suspicion", "0") or "0")
+
+    def _strictness(self) -> int:
+        s = self._suspicion()
+        return 0 if s < 3 else (1 if s < 7 else 2)
+
+    def _bump_suspicion(self, verdict) -> None:
+        w = sum(wt for sig, wt in self._SUSPICION_WEIGHTS.items() if getattr(verdict, sig, False))
+        if w:
+            self.store.set_meta("suspicion", str(self._suspicion() + w))
 
     def _labels(self, tool_input: dict) -> list[str]:
         """Keyword-free provenance: flag any argument value that traces to quarantined
