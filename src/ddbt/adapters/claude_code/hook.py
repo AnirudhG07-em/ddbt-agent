@@ -75,8 +75,10 @@ def handle_posttooluse(payload: dict) -> dict:
     tool_input = payload.get("tool_input", {}) or {}
     eng = _engine(payload)
     try:
-        # the tool RAN, so a gated (ASK) action was human-approved → confirm + widen
-        eng.confirm_from_result(tool_name, tool_input, cwd=cwd)
+        # the tool RAN → quarantine its output (untrusted-by-default) so the judge can
+        # inspect later steps for injected/stray behaviour. v4 has no envelope to "widen":
+        # a gated (ASK) action that ran was human-approved, and that's recorded by the
+        # PreToolUse decision already; nothing more to confirm here.
         eng.record_result(tool_name, tool_input, payload.get("tool_response", {}) or {}, cwd=cwd)
     finally:
         eng.close()

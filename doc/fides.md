@@ -1,0 +1,69 @@
+# FIDES — an IFC-instrumented agent planner that taint-tracks confidentiality+integrity labels and deterministically enforces tool-call policies, with hide/reveal to keep utility high
+
+- **Source:** "Securing AI Agents with Information-Flow Control," Manuel Costa, Boris Köpf, Aashish Kolluri, Andrew Paverd, Mark Russinovich, Ahmed Salem, Shruti Tople, Lukas Wutschitz, Santiago Zanella-Béguelin (Microsoft), 2025. arXiv:2505.23643 (v2, 3 Sep 2025). PDF: https://arxiv.org/pdf/2505.23643 . Code/tutorial: https://github.com/microsoft/fides . FIDES = "Flow Integrity Deterministic Enforcement System."
+- **Category:** Information-Flow Control (IFC) for the agent *planner*: dynamic taint-tracking over a confidentiality×integrity label lattice + deterministic policy enforcement at tool-call time + novel hide/reveal primitives (selective introduction + constrained inspection of variables) acting as declassification/endorsement escape hatches. Formal guarantees: non-interference for integrity, explicit secrecy for confidentiality.
+
+## Pipeline (stage by stage)
+
+FIDES models the standard ReAct-style **agent loop** but factors it into a *planning loop* (deterministic scaffolding) parameterized by a *planner* (the LLM-driven decision-maker). The planning loop intercepts every action the planner proposes and enforces policy before executing it. Components (Fig. 1): User, Planner, Planner's memory, LLM, Tools, World/datastore, Policy Engine, Attacker.
+
+1. **Labeling at the source [deterministic].** Every piece of data carries a label `(C, I)` ∈ a lattice (see Key mechanisms). Labels originate from tools reading the datastore: tools return structured data (JSON) and FIDES adds a `metadata` field to every node in the result tree carrying that node's label (label applies to the node and all descendants; missing → inherit parent). All untrusted tools are assumed to have **trusted wrappers** so outputs are labeled soundly (e.g. a web-search wrapper labels results `U` = untrusted; "Mark-of-the-Web" / external-domain hints map to labels). System and user messages default to `⊥ = (T, L)`.
+
+2. **Planner proposes an action [LLM].** The planner is an LLM that, given the labeled conversation, returns one of three actions: **Query** (ask the LLM with a conversation history), **MakeCall f(args)** (call a tool), or **Finish** (respond to user). FIDES studies a spectrum: a *basic planner* (appends every message to history), a *variable-passing planner* (stores tool results in named memory variables `#read_emails_0.subject` and passes them by reference), and FIDES itself (variable-passing + hide/reveal).
+
+3. **Taint propagation [deterministic].** The planning loop is instrumented with taint-tracking (Algorithm 5). The conversation/context carries a label `ℓ` = the join of all messages in history. When the planner queries the LLM, the loop **conservatively propagates** the context label to the response (it cannot precisely track flow inside the LLM). When a tool runs, its outputs and any datastore variables it writes (`W(f)`) get a label that soundly over-approximates the join of the tool label, all argument labels, and everything the tool reads (`R(f)`): `τ' = τ[x ↦ ℓ'' | x ∈ W(f)]` where `ℓ'' = ⊔_{x∈R(f)} τ(x) ⊔ ℓ_f ⊔ ⊔_{a∈args} ℓ'_a`. Taint is **monotonic** — labels only rise, no downgrade without explicit hide/reveal.
+
+4. **Policy check at tool-call time [deterministic].** Before any `MakeCall`, the loop checks `policy(action)`; if it fails, **abort**. The check `policy(MakeCall f^{ℓ_f} args^{ℓ'})` reduces to comparing dynamic labels against the tool's static policy labels `π_f, π⃗`: it succeeds iff `ℓ_f ⊑ π_f` and for every argument `ℓ'_x ⊑ π_x` — i.e. the tool and each argument are at most at the level the policy permits. Two fundamental policies, applied automatically (no per-task hand-writing):
+   - **P-T (Trusted action):** `π_f = (T, ⊤)` — a consequential tool may run only if its decision was based exclusively on **trusted** inputs (integrity check). Gives a **non-interference** guarantee: attacker-controlled `U` data cannot trigger consequential actions → stops PIAs.
+   - **P-F (Permitted flow):** `π_d = (⊤, R)` — a tool that egresses data `d` to recipients `R` may run only if all recipients are permitted readers (confidentiality check). Gives **explicit secrecy** (bounds illicit egress; doesn't hide *that* data was sent).
+   In evaluation they apply **P-T to every consequential tool** and **P-T or P-F to every egress tool** — only two generic policies, avoiding benchmark overfitting.
+
+5. **Finish [LLM].** When done, the planner returns a response to the user.
+
+Deterministic vs LLM split: **Deterministic** = label assignment via tool wrappers, taint propagation/join, policy checks, abort, variable storage/EXPAND substitution, the `hide` recursive walk, and the type-constrained decoding that bounds `reveal` output capacity. **LLM** = the planner's action choice and reasoning, plus the isolated quarantined LLM used by `reveal`/`query_llm`. The planner sees variable *handles* and labels for hidden data, not the raw confidential/untrusted content.
+
+## Key mechanisms
+
+1. **The label lattice (confidentiality × integrity).** Labels `(C, I)` are elements of a product lattice with partial order `⊑` and join `⊔` (least upper bound); FIDES needs only a *join semi-lattice*.
+   - **Confidentiality:** canonical 2-element `{L, H}` with `L ⊑ H` (L = public, H = secret). Richer: the **readers** lattice = powerset `P(U)` of users, where a label is the *set of authorized readers* and **join = set intersection** (combining `{A,B,C}` and `{B,C,D}` → `{B,C}` can read the derived value).
+   - **Integrity:** canonical 2-element `{T, U}` with `T ⊑ U` (T = trusted/high-integrity, U = untrusted/low). Dually, a **writers** lattice = powerset with **join = set union** (anyone who could write either input could have influenced the result).
+   - **Product lattice (Fig. 2):** four corners `(T,L)`, `(U,L)`, `(T,H)`, `(U,H)`; top `⊤ = (U,H)` = untrusted+confidential, bottom `⊥ = (T,L)` = trusted+public. Arrows show allowed flow directions (toward higher labels).
+2. **Dynamic monotonic taint-tracking in the planning loop.** Labels propagate by join across messages, LLM queries (conservative), and tool reads/writes; they never fall except via explicit declassification.
+3. **Deterministic two-policy enforcement (P-T integrity, P-F confidentiality)** at tool-call time — generic, not per-task, yields formal non-interference (integrity) + explicit secrecy (confidentiality).
+4. **HIDE — selective introduction of variables (the novel utility win).** Inspired by Dual-LLM but with a key twist: instead of appending a tool result to the conversation (which would raise the context label and restrict all future tool calls), FIDES recursively walks the result and any node *more restrictive than the current context* is moved into a fresh memory **variable** with its original label; the planner gets a handle, the context label stays unchanged. Result: confidential/untrusted data is "hidden" from the planner's context while still referenceable by name in later tool calls — same security, far less collateral restriction.
+5. **REVEAL — constrained inspection of variables = declassification/endorsement escape hatch.** When the planner *must* see hidden content (e.g. to summarize emails), it calls `query_llm(prompt, output_schema, input=#var)`: an **isolated quarantined LLM** with **constrained decoding** extracts a value of a declared *type*. FIDES integrates the **output schema into the label** via a *type lattice* (e.g. `bool ⊑ enum["a","b","c"] ⊑ string`, ordered by information capacity). Labels become `(security_label, type)` pairs, e.g. a boolean decision from a `(U,L)` context is labeled `((U,L), bool)`. **Low-capacity outputs (1 bit) can be allowed into consequential/egress sinks** that an unbounded `string` from the same context would be barred from — capacity-bounded declassification/endorsement. Authorization is **explicit and policy-driven**; nothing downgrades implicitly.
+
+## Strengths / what's genuinely good
+
+- **Formal guarantees:** non-interference for integrity (provably PIAs cannot trigger consequential actions) and explicit secrecy for confidentiality (Proposition 1), with a clean small-step semantics.
+- **Two generic policies stop ALL AgentDojo prompt-injection attacks** with policy checks enabled (without checks, every planner including FIDES succumbs).
+- **High utility despite security:** with reasoning models (o1/o3/o4-mini) FIDES completes ~16% more tasks than a basic planner on average, rising to ~24% with prompt tuning (approaching a human oracle). The complexity of hide/reveal does **not** reduce task completion vs a basic planner when using reasoning models.
+- **hide/reveal expand the *class of securely-solvable tasks*** — the taxonomy (data-independent vs data-dependent tasks) formally shows why: hiding lets data-dependent tasks proceed without poisoning the whole context.
+- **Type-capacity labels** are an elegant, principled escape hatch: 1-bit declassification is provably low-risk for both exfiltration and injection payloads.
+- **Practical labeling story:** reuses real enterprise classification (Microsoft Purview, Microsoft 365 / Google Workspace labels), MCP annotations (`readOnlyHint`, `openWorldHint`), and Mark-of-the-Web as label sources.
+
+## Limitations / failure modes
+
+- **Explicit secrecy ≠ non-interference for confidentiality:** by checking only argument labels (not the *tool* label) for egress, FIDES deliberately does **not** prevent *implicit* flows — an adversary observing the *sequence/order* of tool calls may still infer limited leaked bits. A pragmatic trade-off (full confidentiality non-interference was deemed too restrictive).
+- **Conservative taint over-approximation** can over-label and restrict tools; hide mitigates but cannot fully eliminate this.
+- **Soundness depends entirely on trusted tool wrappers** labeling outputs correctly; mislabeling breaks guarantees. MCP hints are "too coarse-grained and might not be reliable."
+- **The quarantined `reveal` LLM can still be manipulated within its schema** (low-capacity types bound this; `string` outputs remain risky and are barred from sensitive sinks).
+- **Best utility needs strong reasoning models** and some prompt tuning; weaker models benefit less.
+- **Implicit-flow / side-channel leakage via control flow** is out of the confidentiality guarantee by design.
+
+## Best pieces to steal for ddbt
+
+- **For the step-judge → deterministic two-label pre-check before the LLM judge (the single biggest idea).** FIDES shows that a tiny, fixed set of label policies — "consequential tool args must be trusted (integrity)" and "egress only to permitted readers (confidentiality)" — catches the entire AgentDojo attack class *deterministically*, with no injectable LLM in the decision. ddbt should run this label check as a hard gate *ahead of* the step-judge: it cannot be prompt-injected (it reasons over labels, not content), it directly hardens Axis-1 (anti-injection) and the no-leak invariant, and it lets the (injectable) judge focus only on the residual fuzzy cases. This is the cleanest mitigation for ddbt's known "the judge reads untrusted content" tradeoff.
+- **For quarantine → attach (confidentiality, integrity) labels to every quarantined row and propagate by join.** ddbt already stores tool outputs in per-session SQLite. Add two columns: integrity (trusted/untrusted by origin) and confidentiality/readers. Propagate monotonically (a value derived from any untrusted/secret row inherits the join). The no-leak invariant becomes a deterministic label check at egress, not a hope about judge behavior.
+- **For quarantine → adopt HIDE (handles, not content).** Instead of letting tool output content raise the "suspicion/restriction level" of the whole session context, keep restrictive data behind handles in SQLite and only let the agent reference it by id; the session stays usable for unrelated trusted actions. This preserves utility under ddbt's quarantine-by-default model exactly as hide does for FIDES.
+- **For quarantine → adopt REVEAL with type-capacity labels as a controlled declassification path.** When the agent genuinely needs hidden content, route it through a tool-less, schema-constrained extraction and *label the result by output capacity*. A 1-bit/enum extraction can be allowed to flow into a gated action that an unbounded string from the same untrusted source would be denied — a principled, auditable escape hatch that bounds both exfiltration and injection payloads.
+- **For the suspicion ratchet → monotonic taint is the formal version of ddbt's never-lowers ratchet.** FIDES's monotonic labels (only rise without explicit declassification) validate ddbt's NORMAL→ELEVATED→LOCKED design; consider making per-value taint (not just per-session) so the ratchet is data-flow-aware, and make declassification (lowering) require an explicit, audited reveal.
+- **For Boundary 0 → reuse real classification + MCP annotation hints as label sources.** Map MCP `readOnlyHint`/`openWorldHint` and origin (external domain / Mark-of-the-Web) into integrity labels during Boundary-0's config/MCP integrity pass, so labels are bootstrapped deterministically.
+- **For audit → log labels and every hide/reveal (declassification).** Each declassification is exactly the security-relevant event an append-only audit log should capture; FIDES's "no implicit downgrade" maps onto ddbt's fail-closed audit discipline.
+
+## Sources
+
+- [Securing AI Agents with Information-Flow Control — arXiv:2505.23643](https://arxiv.org/abs/2505.23643)
+- [Full PDF (v2)](https://arxiv.org/pdf/2505.23643)
+- [FIDES code/tutorial (microsoft/fides)](https://github.com/microsoft/fides)
+- [AgentDojo benchmark (Debenedetti et al., NeurIPS 2024)](https://arxiv.org/abs/2406.13352)
