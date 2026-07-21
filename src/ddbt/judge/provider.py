@@ -118,26 +118,6 @@ def make_desc_scanner(model: str | None = None):
     return AnthropicDescriptionScanner(model)
 
 
-def make_structured_caller(model: str | None = None):
-    """A callable (system, tool_schema, content) -> dict | None for the active provider.
-
-    For anything that needs one structured answer and is not the per-step judge — currently
-    the plan builder. Returns None if no key is configured, so callers can degrade instead
-    of failing: a missing plan must not break the pipeline.
-    """
-    provider = active_provider()
-    if not key_present(provider):
-        return None
-    model = model or default_model(provider)
-    if provider == "gemini":
-        from ddbt.judge.gemini import gemini_tool_call
-
-        return lambda system, tool, content: gemini_tool_call(system, tool, content, model)
-    from ddbt.judge.step_judge import anthropic_tool_call
-
-    return lambda system, tool, content: anthropic_tool_call(system, tool, content, model)
-
-
 def key_present(provider: str | None = None) -> bool:
     """Is a usable API key actually set for the chosen provider?"""
     provider = provider or active_provider()

@@ -551,7 +551,7 @@ Two numbers matter, not one. <b>Attacks stopped</b> is easy to max out by denyin
 
 <div class="cols-3">
 <div class="stat good">
-<div class="num">92.7%</div>
+<div class="num">91.5%</div>
 <div class="lbl"><b>R-Judge</b> · F1 on unsafe<br /><span class="muted">GPT-4o baseline ≈ 74%</span><br />571 trajectories</div>
 </div>
 <div class="stat good">
@@ -569,7 +569,7 @@ Two numbers matter, not one. <b>Attacks stopped</b> is easy to max out by denyin
 
 #### R-Judge, in detail
 
-recall **92.4%** (278/301 unsafe caught) · specificity **92.2%** · precision **93.0%** · 0 judge errors.
+recall **93.4%** (281/301 unsafe caught) · specificity **88.1%** · precision **89.8%** · 0 judge errors.
 
 Run with the **harm axis switched off** — goal-fidelity alone produced this.
 
@@ -708,7 +708,7 @@ R-Judge caught the judge **denying the agent for reporting an injection to the u
 once while it was *warning* them. The prompt already forbade that.
 
 Fixed by making "who receives the effect?" the **first** question, not a caveat buried in
-prose: F1 **89.3% → 92.7%**, false positives **41 → 21**.
+prose: F1 **89.3% → 91.5%**, false negatives **25 → 20**.
 
 A rule the model has to infer is not a rule.
 

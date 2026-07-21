@@ -10,13 +10,12 @@ and every step is written to a lawful audit trail. No wordlists anywhere.
 from __future__ import annotations
 
 import enum
-import os
 import re
 from dataclasses import dataclass
 
-from ddbt.core import bootstrap, plan, provenance
+from ddbt.core import bootstrap, provenance
 from ddbt.core.audit import AuditLogger
-from ddbt.judge.provider import make_step_judge, make_structured_caller
+from ddbt.judge.provider import make_step_judge
 from ddbt.judge.step_judge import StepFacts
 from ddbt.store.session import SessionStore
 
@@ -108,7 +107,7 @@ def _summarize(tool: str, tool_input: dict) -> str:
 
 class Engine:
     def __init__(self, session_id, workspace_root, base_dir=None, step_judge=None, ddbd=True,
-                 error_effect="ask", plan_builder=None, use_plan=None, **_legacy):
+                 error_effect="ask", **_legacy):
         # ddbd=True enables AXIS 2 (the "Don't Do Bad Things" ethics/harm layer). Axis 1
         # (goal-fidelity / anti-injection) is ALWAYS on. Benchmarks measuring operational
         # safety (e.g. R-Judge) set ddbd=False to isolate axis 1.
@@ -121,18 +120,7 @@ class Engine:
         self.store = SessionStore(session_id, base_dir=base_dir)
         self.audit = AuditLogger(self.store)
         self.step_judge = step_judge or make_step_judge()
-        # plan_builder=None means "resolve from the configured provider"; tests inject a stub.
-        self.plan_builder = plan_builder
-        # The plan root (core/plan.py) is OFF by default, on the evidence. Measured over all
-        # 571 R-Judge trajectories it cost F1 92.2% -> 90.8% and +67% wall-clock (one extra
-        # model call per task). The case FOR it is four scenarios we wrote ourselves to
-        # demonstrate it — the weakest evidence there is, and not enough to outweigh a real
-        # measurement. The code stays because the idea is sound and aimed at long multi-step
-        # tasks R-Judge does not contain: turn it on with DDBT_PLAN=1 and measure on
-        # AgentDojo / AgentDyn before believing it.
-        self.use_plan = (os.environ.get("DDBT_PLAN", "0") == "1") if use_plan is None else bool(use_plan)
         self.goal = self.store.get_meta("goal", "") or ""
-        self.plan = self._load_plan() if self.use_plan else None
 
     # ---- lifecycle ----
 
@@ -152,43 +140,10 @@ class Engine:
         if _is_substantive_goal(prompt):
             self.goal = prompt.strip()
             self.store.set_meta("goal", self.goal)
-            self._build_plan()
         denials = [e for e in self.audit.trail() if e.get("kind") == "decision" and e.get("state") == "deny"]
         if denials:
             return f"[ddbt] note: a prior step was blocked ({denials[-1].get('reason')}). Stay on the stated task."
         return ""
-
-    # ---- the plan root: an envelope built from the goal, before any tool output ----
-
-    def _build_plan(self) -> None:
-        """Derive the action envelope for the new goal. Once per task, best-effort.
-
-        Timing is the entire security property: this runs while the only input in existence
-        is the user's own words, so there is no moment at which injected content could have
-        shaped it. Failure is silent and harmless — without a plan the judge simply compares
-        against the goal, exactly as it did before.
-        """
-        self.plan = None
-        if not self.goal or not self.use_plan:
-            return
-        try:
-            caller = self.plan_builder if self.plan_builder is not None else make_structured_caller()
-            built = plan.build(self.goal, caller)
-        except Exception:
-            built = None
-        if built is None:
-            self.store.set_meta("plan", "")
-            return
-        self.plan = built
-        self.store.set_meta("plan", built.to_json())
-        self.audit.event(
-            "plan", capabilities=",".join(built.capabilities),
-            egress=built.egress_description if built.egress_expected else "none",
-        )
-
-    def _load_plan(self):
-        raw = self.store.get_meta("plan", "") or ""
-        return plan.PlanRoot.from_json(raw) if raw else None
 
     # ---- per-step decision (the judge is the decider) ----
 
@@ -213,7 +168,6 @@ class Engine:
             input_labels=self._labels(tool_input),
             quarantined=evidence,
             history=self._history(),
-            plan=self.plan.render() if self.plan else "",
         )
         verdict = self.step_judge.judge(facts)
         strictness = self._strictness()  # derived from suspicion accumulated by PRIOR steps
