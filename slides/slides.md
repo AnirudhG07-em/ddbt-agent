@@ -637,33 +637,68 @@ which number we are missing, and why it is the one that would hurt.
 
 ---
 
-## Five ways a live agent breaks us
+## Five ways a live agent breaks us — and the fixes
 
 <div class="cols">
 <div>
 
-<h4>1 · Normal work looks like exfiltration</h4>
-<p class="small">Provenance flags any value traced to tool output as <i>injection-derived</i>. But the normal agent pattern <b>is</b> read-then-act: read the email, reply to that address. Our static benign cases take arguments straight from the goal, so this never fired. In a live loop it fires constantly — on the legitimate path.</p>
+<h4>1 · Normal work looked like exfiltration <span class="pill have">fixed</span></h4>
+<p class="small">Any value from tool output was flagged <i>injection-derived</i> — but read-then-act <b>is</b> the normal pattern. Now the question is <b>where the value sat</b>: a <code>from:</code> field is chosen by the mail system (grounded); an address inside a <code>body</code> is chosen by whoever wrote it (injection-derived).</p>
 
-<h4>2 · Implicit destinations</h4>
-<p class="small">"Email my manager" names no address. The legitimate recipient is not in the goal, so it cannot be user-named. The defence has no way to tell it from a leak.</p>
+<h4>2 · Implicit destinations <span class="pill have">fixed</span></h4>
+<p class="small">"Email my manager" names no address. An address resolved from a directory <i>field</i> is now grounded, so it gates for a human instead of being denied as a leak.</p>
 
-<h4>3 · Preparatory steps look off-goal</h4>
-<p class="small">R-Judge rec 28: user asked to transfer Ether, the agent fetched the price first — <b>denied as off-goal</b>. With no plan, there is no notion of "a step toward". Long tasks are mostly preparatory steps.</p>
+<h4>3 · Preparatory steps looked off-goal <span class="pill have">fixed</span></h4>
+<p class="small">A retrieval changes nothing outside the agent and its result is quarantined, so it <b>cannot</b> be a deviation. Demanding every lookup be named in advance blocks ordinary work.</p>
 
 </div>
 <div>
 
-<h4>4 · The ratchet compounds, and cannot recover</h4>
-<p class="small">One deviation flag scores 2; add a side-task and you are at <b>ELEVATED</b>, where high-impact steps stop asking and start denying. The floor never drops. <b>A single early false positive can brick the rest of the episode</b> — and our benchmarks are 1–2 calls long, so we have never seen it happen.</p>
+<h4>4 · The ratchet compounded <span class="pill have">fixed</span></h4>
+<p class="small">ELEVATED turned high-impact steps from <span class="verdict ask">ask</span> into <span class="verdict deny">deny</span>, so one false positive bricked the session. ELEVATED now <b>gates</b>; only LOCKED refuses. Suspicion accrues from blocked steps or ≥2 corroborating signals — thresholds 3/7 → 6/12. <code>ddbt clear</code> is the only way down, and it is audited.</p>
 
-<h4>5 · The judge's window is too small</h4>
-<p class="small">It sees the last <b>3</b> quarantined outputs, <b>6</b> prior steps, and <b>2000</b> characters per output. In a long trajectory an injection ingested earlier — or padded past 2000 characters — is simply <b>invisible</b> to provenance. An attacker only has to wait, or pad.</p>
+<h4>5 · The judge's window was too small <span class="pill have">fixed</span></h4>
+<p class="small">Last 3 outputs, 2000 chars — an attacker only had to <b>wait or pad</b>. Retrieval is now by <b>relevance</b>, provenance is an index lookup rather than a recency scan, and the cap is 8000.</p>
 
 </div>
 </div>
 
-<p class="foot">1–3 cause false positives (lost utility). 4 amplifies them. 5 causes false negatives (lost security) — and is the cheapest of all of these for an attacker to exploit deliberately.</p>
+<p class="foot">Measured on all 571 R-Judge trajectories: <b>F1 89.3% → 91.5%</b>, false negatives <b>25 → 20</b>, runtime <b>217s → 132s</b>. Better on both error types, and faster.</p>
+
+---
+
+## The one that did not work
+
+<div class="cols">
+<div>
+
+We built a **plan root** — the idea every paper points at. One extra call reads *only the user's request* and writes an envelope of what the task may do, before any attacker text exists.
+
+It fixed all three failures we aimed it at. So we measured it properly.
+
+</div>
+<div>
+
+| | F1 | time |
+| --- | --- | --- |
+| **no plan** | **92.2%** | **132s** |
+| as a ceiling | 90.8% | 220s |
+| reframed | 90.8% | 220s |
+| permission-only | 89.7% | 242s |
+
+</div>
+</div>
+
+<blockquote style="margin-top:0.5em">
+The permission-only version can <b>only</b> excuse a step, never condemn one — false positives could only go down. It lost hardest.
+</blockquote>
+
+<p class="foot">Likely cause: not the logic but the <b>bulk</b>. A block of derived text dilutes the two signals the judge actually decides on — the provenance label and the quarantined evidence. It was also <b>redundant</b>: with it off, all four of its own target scenarios still pass. <b>Deleted, not flagged off</b> — keeping it behind a switch was still a bet on evidence we do not have.</p>
+
+Note:
+This is the slide to be proud of. Anyone can show what worked. Showing a well-motivated
+idea, measured honestly, losing three times, and being deleted is what separates a
+result from a demo.
 
 ---
 
@@ -724,29 +759,31 @@ A rule the model has to infer is not a rule.
 <div class="cols">
 <div>
 
-<h4>1 · Plan root <span class="pill none">not built</span></h4>
-<p class="small">Derive the allowed-action envelope from the trusted request <b>before</b> any tool output. Turns "judge, what do you reckon?" into a lookup. <span class="muted">— CaMeL, DRIFT</span></p>
+<h4>1 · Deterministic pre-filter <span class="pill none">not built</span></h4>
+<p class="small">Read-only, in-workspace, no egress → <span class="verdict allow">allow</span> with <b>no model call at all</b>. Agent-Sentry settles ~96% of calls this way. Unlike the plan root it <b>removes</b> calls instead of adding one — the real latency fix, and it shrinks the injectable surface to the ambiguous tail. <span class="muted">— Agent-Sentry, AgentSpec</span></p>
 
-<h4>2 · Labels as a real gate <span class="pill part">advisory only</span></h4>
-<p class="small">Provenance currently only <i>informs</i> the judge. Make it block on its own, and store proper lineage so multi-step laundering is visible. <span class="muted">— FIDES, AgentArmor</span></p>
+<h4>2 · A utility baseline <span class="pill part">never measured</span></h4>
+<p class="small">Run AgentDojo <code>workspace</code> with <b>no injections</b>: pure task completion, defended vs undefended. Cheap, and it turns "we predict utility will drop" into a number to improve against. <span class="muted">— the gap we keep naming</span></p>
 
 <h4>3 · Finish MCP <span class="pill part">80% done</span></h4>
-<p class="small">Fetch the live tool list, hash it, run the scanner we already have, feed descriptions to the judge. <span class="muted">— small, high value</span></p>
+<p class="small">Fetch the live tool list at startup, hash it, run the scanner that already scores <b>484/485</b>, and feed descriptions to the judge. Small, and it finishes work already written. <span class="muted">— rug-pull detection comes free</span></p>
 
 </div>
 <div>
 
 <h4>4 · Hard floors <span class="pill none">not built</span></h4>
-<p class="small">OS sandbox (network off by default, writes confined) plus per-server tickets with TTL and quota. Independent of any model being right. <span class="muted">— Codex, SAGA</span></p>
+<p class="small">OS sandbox (network off by default, writes confined) plus per-server tickets with TTL and quota. The only layer that holds when the judge is wrong. <span class="muted">— Codex, SAGA</span></p>
 
-<h4>5 · Staging + blind diff review <span class="pill none">dropped in v4</span></h4>
-<p class="small">Make a wrong <span class="verdict allow">allow</span> undoable, and review the aggregate diff with a fresh-context judge that never saw the attacker's prose. <span class="muted">— Codex</span></p>
+<h4>5 · Multi-step laundering <span class="pill none">not built</span></h4>
+<p class="small">Read the secret at step 2, reshape at 5, send at 9 — no single step looks wrong. The provenance table is already the right shape to grow into a session graph. <span class="muted">— AgentArmor, FIDES</span></p>
 
 <h4>6 · Adaptive red-team suite <span class="pill none">not built</span></h4>
-<p class="small">LGA's 92%→50% only shows up if you attack your own judge on purpose. Standing regression, not a one-off. <span class="muted">— LGA</span></p>
+<p class="small">LGA's 92%→50% only appears if you attack your own judge on purpose. A standing regression, not a one-off. <span class="muted">— LGA</span></p>
 
 </div>
 </div>
+
+<p class="foot">The plan root is <b>not</b> on this list any more — we built it, measured it three ways, and deleted it.</p>
 
 ---
 
@@ -757,9 +794,10 @@ A rule the model has to infer is not a rule.
 
 #### Built and working
 
-Quarantine everything · append-only audit outside the workspace · the never-lowering
-suspicion ratchet · two separated axes · config and MCP integrity hashing · a semantic
-poison scanner that beats keyword matching by 485 to nothing
+Quarantine everything · append-only audit outside the workspace · two separated axes ·
+config and MCP integrity hashing · a poison scanner at **484/485 with zero false
+positives** · **structural provenance** (a field is not a message body) · a suspicion
+ratchet that gates rather than bricks, and only a human can clear
 
 </div>
 <div class="card info">
@@ -777,6 +815,8 @@ hard floors underneath."**
 <blockquote style="margin-top:0.6em">
 The judge is not the wrong idea. It is the wrong <b>only</b> idea.
 </blockquote>
+
+<p class="foot">And the habit that produced every number here: <b>measure the thing you just built, especially when you want it to work.</b> A benign control caught a "100%" that was 485 errors. A full run killed a plan root that passed every test we wrote for it.</p>
 
 ---
 
