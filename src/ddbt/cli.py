@@ -5,6 +5,7 @@
   ddbt trust     --project DIR     baseline current config (Boundary 0 approval)
   ddbt verify    --project DIR     run Boundary 0 integrity check
   ddbt audit     --session ID      print a session's decision trail
+  ddbt clear     --session ID      clear suspicion after a false positive (audited)
   ddbt hook      EVENT             hook entrypoint (reads stdin JSON) — used by Claude Code
 """
 
@@ -50,6 +51,27 @@ def _cmd_verify(args: argparse.Namespace) -> int:
     result = bootstrap.verify(args.project)
     print(result.summary())
     return 0 if result.ok else 1
+
+
+def _cmd_clear(args: argparse.Namespace) -> int:
+    """Human clearance for a session whose guard tightened on a false positive."""
+    from ddbt.core.engine import Engine
+
+    eng = Engine(args.session, workspace_root=os.getcwd(), step_judge=_NullJudge())
+    try:
+        before = eng.clear_suspicion(args.reason)
+    finally:
+        eng.close()
+    print(f"\u2713 session {args.session}: suspicion {before} \u2192 0, strictness \u2192 NORMAL")
+    print(f"  recorded in the audit trail as: {args.reason}")
+    return 0
+
+
+class _NullJudge:
+    """Clearing state must never need a model (or an API key)."""
+
+    def judge(self, facts):  # pragma: no cover - never called
+        raise AssertionError("clear does not judge")
 
 
 def _cmd_audit(args: argparse.Namespace) -> int:
@@ -164,6 +186,11 @@ def build_parser() -> argparse.ArgumentParser:
     _proj(sub.add_parser("uninstall", help="remove Claude Code hooks")).set_defaults(fn=_cmd_uninstall)
     _proj(sub.add_parser("trust", help="baseline config for Boundary 0")).set_defaults(fn=_cmd_trust)
     _proj(sub.add_parser("verify", help="run Boundary 0 integrity check")).set_defaults(fn=_cmd_verify)
+
+    c = sub.add_parser("clear", help="clear a session's suspicion (audited human override)")
+    c.add_argument("--session", required=True)
+    c.add_argument("--reason", default="cleared by the user", help="recorded in the audit trail")
+    c.set_defaults(fn=_cmd_clear)
 
     a = sub.add_parser("audit", help="print a session's decision trail")
     a.add_argument("--session", required=True)

@@ -10,12 +10,13 @@ and every step is written to a lawful audit trail. No wordlists anywhere.
 from __future__ import annotations
 
 import enum
+import os
 import re
 from dataclasses import dataclass
 
-from ddbt.core import bootstrap, provenance
+from ddbt.core import bootstrap, plan, provenance
 from ddbt.core.audit import AuditLogger
-from ddbt.judge.provider import make_step_judge
+from ddbt.judge.provider import make_step_judge, make_structured_caller
 from ddbt.judge.step_judge import StepFacts
 from ddbt.store.session import SessionStore
 
@@ -107,7 +108,7 @@ def _summarize(tool: str, tool_input: dict) -> str:
 
 class Engine:
     def __init__(self, session_id, workspace_root, base_dir=None, step_judge=None, ddbd=True,
-                 error_effect="ask", **_legacy):
+                 error_effect="ask", plan_builder=None, use_plan=None, **_legacy):
         # ddbd=True enables AXIS 2 (the "Don't Do Bad Things" ethics/harm layer). Axis 1
         # (goal-fidelity / anti-injection) is ALWAYS on. Benchmarks measuring operational
         # safety (e.g. R-Judge) set ddbd=False to isolate axis 1.
@@ -120,7 +121,18 @@ class Engine:
         self.store = SessionStore(session_id, base_dir=base_dir)
         self.audit = AuditLogger(self.store)
         self.step_judge = step_judge or make_step_judge()
+        # plan_builder=None means "resolve from the configured provider"; tests inject a stub.
+        self.plan_builder = plan_builder
+        # The plan root (core/plan.py) is OFF by default, on the evidence. Measured over all
+        # 571 R-Judge trajectories it cost F1 92.2% -> 90.8% and +67% wall-clock (one extra
+        # model call per task). The case FOR it is four scenarios we wrote ourselves to
+        # demonstrate it — the weakest evidence there is, and not enough to outweigh a real
+        # measurement. The code stays because the idea is sound and aimed at long multi-step
+        # tasks R-Judge does not contain: turn it on with DDBT_PLAN=1 and measure on
+        # AgentDojo / AgentDyn before believing it.
+        self.use_plan = (os.environ.get("DDBT_PLAN", "0") == "1") if use_plan is None else bool(use_plan)
         self.goal = self.store.get_meta("goal", "") or ""
+        self.plan = self._load_plan() if self.use_plan else None
 
     # ---- lifecycle ----
 
@@ -140,10 +152,43 @@ class Engine:
         if _is_substantive_goal(prompt):
             self.goal = prompt.strip()
             self.store.set_meta("goal", self.goal)
+            self._build_plan()
         denials = [e for e in self.audit.trail() if e.get("kind") == "decision" and e.get("state") == "deny"]
         if denials:
             return f"[ddbt] note: a prior step was blocked ({denials[-1].get('reason')}). Stay on the stated task."
         return ""
+
+    # ---- the plan root: an envelope built from the goal, before any tool output ----
+
+    def _build_plan(self) -> None:
+        """Derive the action envelope for the new goal. Once per task, best-effort.
+
+        Timing is the entire security property: this runs while the only input in existence
+        is the user's own words, so there is no moment at which injected content could have
+        shaped it. Failure is silent and harmless — without a plan the judge simply compares
+        against the goal, exactly as it did before.
+        """
+        self.plan = None
+        if not self.goal or not self.use_plan:
+            return
+        try:
+            caller = self.plan_builder if self.plan_builder is not None else make_structured_caller()
+            built = plan.build(self.goal, caller)
+        except Exception:
+            built = None
+        if built is None:
+            self.store.set_meta("plan", "")
+            return
+        self.plan = built
+        self.store.set_meta("plan", built.to_json())
+        self.audit.event(
+            "plan", capabilities=",".join(built.capabilities),
+            egress=built.egress_description if built.egress_expected else "none",
+        )
+
+    def _load_plan(self):
+        raw = self.store.get_meta("plan", "") or ""
+        return plan.PlanRoot.from_json(raw) if raw else None
 
     # ---- per-step decision (the judge is the decider) ----
 
@@ -168,12 +213,14 @@ class Engine:
             input_labels=self._labels(tool_input),
             quarantined=evidence,
             history=self._history(),
+            plan=self.plan.render() if self.plan else "",
         )
         verdict = self.step_judge.judge(facts)
         strictness = self._strictness()  # derived from suspicion accumulated by PRIOR steps
         effect, checkpoint = self._combine(verdict, strictness)
         if not verdict.error:
-            self._bump_suspicion(verdict)  # this step's checklist tightens FUTURE steps
+            # this step's evidence tightens FUTURE steps (see _bump_suspicion)
+            self._bump_suspicion(verdict, blocked=effect is Effect.DENY)
 
         aid = self.audit.decision(
             checkpoint=checkpoint,
@@ -208,14 +255,17 @@ class Engine:
         if self.ddbd and verdict.harmful:
             return Effect.DENY, "ethics"  # axis 2 — only when ddbd enabled
         soft = verdict.requests_secrecy or verdict.side_task or verdict.injection_suspected
-        if strictness >= 2:  # LOCKED — the session looks compromised
+        if strictness >= 2:  # LOCKED — the session looks genuinely compromised
             if verdict.high_impact or soft:
                 return Effect.DENY, "locked"
             return Effect.ALLOW, "judge"
-        if strictness == 1:  # ELEVATED — tighten the gates
-            if verdict.high_impact:
-                return Effect.DENY, "elevated"  # was gate, now hard-deny
-            if soft:
+        if strictness == 1:
+            # ELEVATED tightens the gates but must NOT remove the human. Escalating
+            # high_impact to a hard DENY here meant one earlier flag could brick the rest of a
+            # long session: a legitimate on-goal action ("share the folder with HR") was denied
+            # outright with no way to approve it. Gating keeps a person in the loop; only
+            # LOCKED — which now takes sustained evidence — refuses outright.
+            if verdict.high_impact or soft:
                 return Effect.ASK, "elevated-gate"
             return Effect.ALLOW, "judge"
         # NORMAL
@@ -227,23 +277,55 @@ class Engine:
 
     _SUSPICION_WEIGHTS = {"harmful": 3, "deviation": 2, "requests_secrecy": 2,
                           "injection_suspected": 2, "external_exfil": 1, "side_task": 1}
+    # A single soft flag on a step we ALLOWED is not evidence of an attack — it is the judge
+    # noticing something. Only accrue when the step was actually blocked, or when several
+    # signals corroborate each other. Before this, one deviation (2) plus one side_task (1)
+    # reached ELEVATED, so a single false positive could tighten a whole session.
+    _MIN_CORROBORATING_SIGNALS = 2
 
     def _suspicion(self) -> int:
         return int(self.store.get_meta("suspicion", "0") or "0")
 
     def _strictness(self) -> int:
         s = self._suspicion()
-        computed = 0 if s < 3 else (1 if s < 7 else 2)
+        # Thresholds sized against the weights above: ELEVATED needs roughly two blocked
+        # deviations, LOCKED roughly four. A long, honest task drifts past 3 far too easily.
+        computed = 0 if s < 6 else (1 if s < 12 else 2)
         # RATCHET: strictness only ever rises. Once a session has tightened, a continuation
         # ("continue with operation") or any future suspicion-decay can never lower the guard.
         # Done as one atomic SQL max() — hooks run as parallel subprocesses, and a Python-side
         # read-max-write would let a stale reader undo another hook's tightening.
         return self.store.raise_meta_floor("strictness_floor", computed)
 
-    def _bump_suspicion(self, verdict) -> None:
-        w = sum(wt for sig, wt in self._SUSPICION_WEIGHTS.items() if getattr(verdict, sig, False))
-        if w:
-            self.store.increment_meta("suspicion", w)  # atomic: concurrent hooks can't lose it
+    def _bump_suspicion(self, verdict, blocked: bool) -> None:
+        """Accrue suspicion only from evidence, not from every observation.
+
+        `blocked` means this step was actually refused — the strongest evidence available.
+        Otherwise we require several signals to agree: one flag on a step we went on to allow
+        is the judge noticing something, not proof of an attack, and treating it as proof is
+        what let a single false positive tighten an entire session.
+        """
+        fired = [sig for sig in self._SUSPICION_WEIGHTS if getattr(verdict, sig, False)]
+        if not fired:
+            return
+        if not blocked and len(fired) < self._MIN_CORROBORATING_SIGNALS:
+            return
+        w = sum(self._SUSPICION_WEIGHTS[sig] for sig in fired)
+        self.store.increment_meta("suspicion", w)  # atomic: concurrent hooks can't lose it
+
+    def clear_suspicion(self, reason: str) -> int:
+        """Explicit, audited human clearance — the ONLY way the guard comes down.
+
+        The ratchet never lowers on its own: no decay, no "continue" reset, nothing an
+        attacker can trigger. But a session that tightened on a false positive must have some
+        way back, or the answer to a bad judgement is "restart and lose your context". The
+        user is the trusted principal, so let them say so — on the record.
+        """
+        before = self._suspicion()
+        self.store.set_meta("suspicion", "0")
+        self.store.set_meta("strictness_floor", "0")
+        self.audit.event("suspicion_cleared", previous=before, reason=reason)
+        return before
 
     def _labels(self, tool_input: dict) -> list[str]:
         """Where did each argument come from? — the decisive anti-injection signal.

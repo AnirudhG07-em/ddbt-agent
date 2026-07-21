@@ -114,6 +114,16 @@ def _first_call(resp, name: str) -> dict | None:
     return None
 
 
+def gemini_tool_call(system: str, tool: dict, content: str, model: str = DEFAULT_MODEL,
+                     client=None) -> dict | None:
+    """One forced function call → its arguments, or None. Mirror of anthropic_tool_call."""
+    client = client or _client()
+    resp = client.models.generate_content(
+        model=model, contents=content, config=_config(system, tool)
+    )
+    return _first_call(resp, tool["name"])
+
+
 @dataclass(slots=True)
 class GeminiStepJudge:
     """Drop-in replacement for :class:`AnthropicStepJudge`, backed by the Gemini API."""
