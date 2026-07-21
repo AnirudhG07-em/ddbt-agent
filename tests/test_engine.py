@@ -98,3 +98,41 @@ def test_every_decision_is_audited(make_engine):
     assert len(decisions) == 2
     assert any(d["state"] == "deny" and d.get("deviation") for d in decisions)
     eng.close()
+
+
+def test_suspicion_increments_are_atomic_across_connections(base_dir):
+    """Claude Code runs hooks as parallel subprocesses, so two PreToolUse hooks can update
+    one session at once. The old read-modify-write (get_meta -> +w -> set_meta) lost updates
+    under that interleaving — a step's suspicion silently vanished, making a session look
+    cleaner than it was. The arithmetic now happens inside a single SQL statement.
+    """
+    import threading
+
+    from ddbt.store.session import SessionStore
+
+    threads, each = 8, 25
+
+    def worker():
+        store = SessionStore("race", base_dir=base_dir)
+        try:
+            for _ in range(each):
+                store.increment_meta("suspicion", 1)
+                store.raise_meta_floor("strictness_floor", 1)
+        finally:
+            store.close()
+
+    ts = [threading.Thread(target=worker) for _ in range(threads)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+
+    store = SessionStore("race", base_dir=base_dir)
+    try:
+        assert int(store.get_meta("suspicion")) == threads * each  # no lost updates
+        assert int(store.get_meta("strictness_floor")) == 1
+        # the ratchet must never lower, even when asked to
+        assert store.raise_meta_floor("strictness_floor", 0) == 1
+        assert store.raise_meta_floor("strictness_floor", 2) == 2
+    finally:
+        store.close()

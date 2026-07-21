@@ -71,6 +71,10 @@ class CommitResult:
 
 
 def _is_substantive_goal(prompt: str) -> bool:
+    # tolerate None/non-str: this is the security path, and a crash here takes the whole
+    # engine down. Anything that isn't real text simply isn't a substantive goal.
+    if not isinstance(prompt, str):
+        return False
     p = prompt.strip().lower().rstrip(".!")
     if p in _CONTINUATION:
         return False
@@ -215,19 +219,16 @@ class Engine:
     def _strictness(self) -> int:
         s = self._suspicion()
         computed = 0 if s < 3 else (1 if s < 7 else 2)
-        # RATCHET: strictness only ever rises (new = max(old, new)). Once a session has
-        # tightened, a continuation ("continue with operation") or any future suspicion-decay
-        # can never lower the guard within that session.
-        floor = int(self.store.get_meta("strictness_floor", "0") or "0")
-        level = max(computed, floor)
-        if level > floor:
-            self.store.set_meta("strictness_floor", str(level))
-        return level
+        # RATCHET: strictness only ever rises. Once a session has tightened, a continuation
+        # ("continue with operation") or any future suspicion-decay can never lower the guard.
+        # Done as one atomic SQL max() — hooks run as parallel subprocesses, and a Python-side
+        # read-max-write would let a stale reader undo another hook's tightening.
+        return self.store.raise_meta_floor("strictness_floor", computed)
 
     def _bump_suspicion(self, verdict) -> None:
         w = sum(wt for sig, wt in self._SUSPICION_WEIGHTS.items() if getattr(verdict, sig, False))
         if w:
-            self.store.set_meta("suspicion", str(self._suspicion() + w))
+            self.store.increment_meta("suspicion", w)  # atomic: concurrent hooks can't lose it
 
     def _labels(self, tool_input: dict) -> list[str]:
         """Keyword-free provenance: flag any argument value that traces to quarantined

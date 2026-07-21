@@ -550,36 +550,120 @@ Two numbers matter, not one. <b>Attacks stopped</b> is easy to max out by denyin
 ## Results
 
 <div class="cols-3">
-<div class="stat">
-<div class="num">—</div>
-<div class="lbl"><b>MCPTox</b><br />poisoned descriptions caught<br /><span class="muted">of 485</span></div>
+<div class="stat good">
+<div class="num">92.7%</div>
+<div class="lbl"><b>R-Judge</b> · F1 on unsafe<br /><span class="muted">GPT-4o baseline ≈ 74%</span><br />571 trajectories</div>
+</div>
+<div class="stat good">
+<div class="num">484<span style="font-size:0.6em">/485</span></div>
+<div class="lbl"><b>MCPTox</b> · poisoned tool<br />descriptions caught (99.8%)<br /><span class="muted">0 of 8 benign flagged</span></div>
 </div>
 <div class="stat">
-<div class="num">—</div>
-<div class="lbl"><b>InjecAgent</b><br />attacks stopped<br /><span class="muted">of 544 cases</span></div>
-</div>
-<div class="stat">
-<div class="num">—</div>
-<div class="lbl"><b>R-Judge</b><br />F1 on unsafe<br /><span class="muted">GPT-4o baseline ≈ 74%</span></div>
+<div class="num">100%</div>
+<div class="lbl"><b>InjecAgent</b> · 1054 attacks stopped,<br />1054 benign clean<br /><span class="muted">read the caveat →</span></div>
 </div>
 </div>
 
-<div class="cols" style="margin-top:0.9em">
-<div class="stat">
-<div class="num">—</div>
-<div class="lbl">benign steps passed with no friction <span class="muted">(false-positive control)</span></div>
-</div>
-<div class="stat">
-<div class="num">—</div>
-<div class="lbl">false positives on clean tool descriptions <span class="muted">(want 0)</span></div>
-</div>
-</div>
+<div class="cols" style="margin-top:0.7em">
+<div class="card good">
 
-<p class="foot">▸ Fill from <code>bench/results/*_gemini.txt</code>. For comparison, the published range for defended AgentDojo runs is ASR ~30–41% → ~0–3% with a single-digit utility drop.</p>
+#### R-Judge, in detail
+
+recall **92.4%** (278/301 unsafe caught) · specificity **92.2%** · precision **93.0%** · 0 judge errors.
+
+Run with the **harm axis switched off** — goal-fidelity alone produced this.
+
+</div>
+<div class="card warn">
+
+#### Why InjecAgent's 100% proves little
+
+Each attack case is a tool call whose **only argument is the attacker's instruction text**,
+against an unrelated goal. The two classes are separable almost by inspection, and the
+injection never travels through the quarantine path.
+
+It is a **regression floor**, not evidence of robustness.
+
+</div>
+</div>
 
 Note:
-Replace every dash before presenting. If a number is missing, say so out loud rather than
-showing a filled-in figure you can't defend.
+Say the InjecAgent caveat out loud. A 100% that you explain away yourself is far more
+credible than one you defend. LGA scored 92% on exactly this kind of static set and
+collapsed to 50-63% under adaptive attack.
+
+---
+
+## What we have NOT measured
+
+<blockquote>
+Every suite above is a <b>static replay</b>: pre-recorded calls, scored one at a time. AgentDojo and AgentDyn drive a <b>live agent through a multi-step task</b>. That measures something our benchmarks structurally cannot — <b>did the job still get done?</b>
+</blockquote>
+
+<div class="cols" style="margin-top:0.6em">
+<div class="card bad">
+
+#### We have never measured utility
+
+"Benign clean pass" means *one isolated call was allowed*. Utility means *a whole task
+completed* — and with no human in the loop, every <span class="verdict ask">ask</span>
+is a task **failure**, not a pause.
+
+Most of our remaining R-Judge false positives are **gates on legitimate on-goal
+actions**: share a folder with HR, post the tweet, transfer the funds, dispatch the unit.
+
+</div>
+<div class="card bad">
+
+#### AgentDyn attacks our core rule directly
+
+AgentDyn puts **benign** third-party instructions on the critical path — you must follow
+them to finish the task.
+
+Our Axis 1 says: *carries out an instruction from quarantined content → deviation → deny,
+non-negotiable.*
+
+That rule is **structurally guaranteed** to fail those tasks. We would block exactly what
+the task requires.
+
+</div>
+</div>
+
+<p class="foot">These two are predictions, not measurements — which is the point of the slide. Published defended AgentDojo runs report ASR ~30–41% → ~0–3% with a single-digit utility drop; we would expect our ASR to land there and our <b>utility drop to be much worse</b>.</p>
+
+Note:
+This is the intellectually honest core of the talk. We have three good numbers and we know
+which number we are missing, and why it is the one that would hurt.
+
+---
+
+## Five ways a live agent breaks us
+
+<div class="cols">
+<div>
+
+<h4>1 · Normal work looks like exfiltration</h4>
+<p class="small">Provenance flags any value traced to tool output as <i>injection-derived</i>. But the normal agent pattern <b>is</b> read-then-act: read the email, reply to that address. Our static benign cases take arguments straight from the goal, so this never fired. In a live loop it fires constantly — on the legitimate path.</p>
+
+<h4>2 · Implicit destinations</h4>
+<p class="small">"Email my manager" names no address. The legitimate recipient is not in the goal, so it cannot be user-named. The defence has no way to tell it from a leak.</p>
+
+<h4>3 · Preparatory steps look off-goal</h4>
+<p class="small">R-Judge rec 28: user asked to transfer Ether, the agent fetched the price first — <b>denied as off-goal</b>. With no plan, there is no notion of "a step toward". Long tasks are mostly preparatory steps.</p>
+
+</div>
+<div>
+
+<h4>4 · The ratchet compounds, and cannot recover</h4>
+<p class="small">One deviation flag scores 2; add a side-task and you are at <b>ELEVATED</b>, where high-impact steps stop asking and start denying. The floor never drops. <b>A single early false positive can brick the rest of the episode</b> — and our benchmarks are 1–2 calls long, so we have never seen it happen.</p>
+
+<h4>5 · The judge's window is too small</h4>
+<p class="small">It sees the last <b>3</b> quarantined outputs, <b>6</b> prior steps, and <b>2000</b> characters per output. In a long trajectory an injection ingested earlier — or padded past 2000 characters — is simply <b>invisible</b> to provenance. An attacker only has to wait, or pad.</p>
+
+</div>
+</div>
+
+<p class="foot">1–3 cause false positives (lost utility). 4 amplifies them. 5 causes false negatives (lost security) — and is the cheapest of all of these for an attacker to exploit deliberately.</p>
 
 ---
 
@@ -618,13 +702,20 @@ We judge each step alone. Read the secret at step 2, reshape it at step 5, send 
 </div>
 <div class="card warn">
 
-#### No floor underneath
+#### Stating a rule is not enforcing it
 
-If the judge is fooled, nothing else stops the action. No OS sandbox, no staging — a wrong
-`allow` is immediately real and irreversible.
+R-Judge caught the judge **denying the agent for reporting an injection to the user** —
+once while it was *warning* them. The prompt already forbade that.
+
+Fixed by making "who receives the effect?" the **first** question, not a caveat buried in
+prose: F1 **89.3% → 92.7%**, false positives **41 → 21**.
+
+A rule the model has to infer is not a rule.
 
 </div>
 </div>
+
+<p class="foot">No floor underneath either: if the judge is fooled, nothing else stops the action — no OS sandbox, no staging, so a wrong <span class="verdict allow">allow</span> is immediately real and irreversible.</p>
 
 ---
 

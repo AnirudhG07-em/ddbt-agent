@@ -22,6 +22,13 @@ from dataclasses import dataclass, field
 from ddbt.core.engine import Effect, Engine
 
 _TOOLNAME = re.compile(r"^\s*([A-Za-z_]\w{2,})\s*[\(\[]")
+# A ReAct trajectory ends with the agent TALKING TO THE USER, not calling a tool. Naming
+# that turn `agent_action` (as if it were a tool invocation) is a modelling error: in the
+# real integration a text response never reaches PreToolUse, only tool calls do. It also
+# produced false positives — the agent was denied for QUOTING an injection back to the
+# user, in one case while warning them about it. It is still judged (axis 2 must be able
+# to fire on harmful advice), but under a name that makes the recipient unambiguous.
+_FINAL_ANSWER = re.compile(r"^\s*final\s*answer\s*:", re.I)
 
 
 @dataclass(slots=True)
@@ -45,7 +52,9 @@ def load_rjudge(data_dir: str, limit: int | None = None) -> list[RJRecord]:
             if not (isinstance(r, dict) and "label" in r and "contents" in r):
                 continue
             conv = r["contents"][0] if r["contents"] and isinstance(r["contents"][0], list) else r["contents"]
-            goal = next((t.get("content", "") for t in conv if t.get("role") == "user"), "")
+            # `.get(k, default)` only falls back when the key is ABSENT — a present-but-null
+            # value returns None. 14 R-Judge records have `content: null`, so coerce with `or`.
+            goal = next((t.get("content") or "" for t in conv if t.get("role") == "user"), "")
             records.append(RJRecord(id=str(r.get("id", len(records))), goal=goal, turns=conv, label=int(r["label"])))
     return records[:limit] if limit else records
 
@@ -73,9 +82,13 @@ def _predict(rec: RJRecord, step_judge, base: str, block_on=(Effect.DENY, Effect
                 action = (turn.get("action") or "").strip()
                 if not action:
                     continue
-                m = _TOOLNAME.match(action)
-                tool = m.group(1) if m else "agent_action"
-                d = eng.evaluate_action(tool, {"action": action})  # NOTE: thought withheld
+                if _FINAL_ANSWER.match(action):
+                    # a message to the USER, not a system-touching call — see _FINAL_ANSWER
+                    d = eng.evaluate_action("respond_to_user", {"message_to_user": action})
+                else:
+                    m = _TOOLNAME.match(action)
+                    tool = m.group(1) if m else "agent_action"
+                    d = eng.evaluate_action(tool, {"action": action})  # NOTE: thought withheld
                 if d.error:
                     errored = True
                     break  # unreliable — don't score this record
@@ -84,7 +97,7 @@ def _predict(rec: RJRecord, step_judge, base: str, block_on=(Effect.DENY, Effect
                     detail = f"[{d.checkpoint}/{d.effect.value}] {tool}: {d.reason}"
                     break  # a stopped step halts the trajectory
             elif role == "environment":
-                eng.record_result("environment", {}, {"content": str(turn.get("content", ""))})
+                eng.record_result("environment", {}, {"content": str(turn.get("content") or "")})
     finally:
         eng.close()
     return stopped, errored, detail
@@ -134,8 +147,25 @@ def score(records: list[RJRecord], step_judge=None, workers: int = 4, block_on=(
     base = tempfile.mkdtemp(prefix="ddbt-rjudge-")
     rep = RJReport()
     t0 = time.monotonic()
+    def _safe(r):
+        """Never let one malformed record destroy a whole run.
+
+        These suites are long and cost real money; raising out of pool.map discards every
+        result computed so far. A record that blows up is counted as errored (excluded from
+        the confusion matrix, same as a judge infra-failure) and reported at the end.
+        """
+        try:
+            return r, _predict(r, step_judge, base, block_on, ddbd)
+        except Exception as exc:
+            return r, (False, True, f"record failed: {type(exc).__name__}: {exc}")
+
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-        preds = list(pool.map(lambda r: (r, _predict(r, step_judge, base, block_on, ddbd)), records))
+        preds = list(pool.map(_safe, records))
+    broken = [(r.id, d) for r, (_, e, d) in preds if e and d.startswith("record failed")]
+    if broken:
+        print(f"  ! {len(broken)} record(s) failed to replay and were excluded: "
+              f"{', '.join(i for i, _ in broken[:5])}")
+        print(f"    first: {broken[0][1]}")
     for rec, (pred_unsafe, errored, detail) in preds:
         if errored:
             rep.errored += 1  # unreliable — exclude from the confusion matrix

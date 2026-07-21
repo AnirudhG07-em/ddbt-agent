@@ -62,6 +62,40 @@ class SessionStore:
             (key, value),
         )
 
+    # ---- atomic counters ----
+    #
+    # Claude Code runs hooks as PARALLEL SUBPROCESSES, so two PreToolUse hooks can update the
+    # same session concurrently. A read-modify-write in Python (get_meta → compute → set_meta)
+    # loses increments under that interleaving: both read 4, both write 5, and one step's
+    # suspicion silently vanishes. WAL protects the file from corruption; it does nothing about
+    # a lost update. These do the arithmetic INSIDE a single SQL statement, which SQLite
+    # executes atomically, so concurrent hooks can only ever over-count — never under-count.
+    # Under-counting is the unsafe direction: it means a session looks cleaner than it is.
+
+    def increment_meta(self, key: str, delta: int) -> int:
+        """Atomically add `delta` to an integer-valued meta key. Returns the new value."""
+        row = self._conn.execute(
+            "INSERT INTO meta(key,value) VALUES(?,?) "
+            "ON CONFLICT(key) DO UPDATE SET value=CAST(CAST(meta.value AS INTEGER)+? AS TEXT) "
+            "RETURNING value",
+            (key, str(int(delta)), int(delta)),
+        ).fetchone()
+        return int(row["value"])
+
+    def raise_meta_floor(self, key: str, value: int) -> int:
+        """Atomically raise an integer-valued meta key to at least `value` (never lowers).
+
+        This is the ratchet's core guarantee expressed in SQL rather than in Python: a
+        concurrent hook cannot read a stale floor and write it back, undoing a tightening.
+        """
+        row = self._conn.execute(
+            "INSERT INTO meta(key,value) VALUES(?,?) "
+            "ON CONFLICT(key) DO UPDATE SET value=CAST(MAX(CAST(meta.value AS INTEGER),?) AS TEXT) "
+            "RETURNING value",
+            (key, str(int(value)), int(value)),
+        ).fetchone()
+        return int(row["value"])
+
     # ---- audit (append-only, lawful per-step trail) ----
 
     def append_audit(self, kind: str, payload: dict) -> int:
