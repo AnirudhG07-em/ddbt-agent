@@ -24,6 +24,15 @@ class DescVerdict:
     poison: bool
     kind: str = "none"  # reads-secrets | exfiltrates | hijacks-tool | hides-from-user | other | none
     reason: str = ""
+    # The scanner could not reach a verdict (missing key, timeout, bad response). We still
+    # report poison=True so the caller fails CLOSED — but this flag MUST stay separate:
+    # an error is not a detection. Counting the two together silently turns a dead API key
+    # into a perfect benchmark score. See bench/mcptox.py, which excludes these.
+    error: bool = False
+
+    @classmethod
+    def errored(cls, reason: str) -> "DescVerdict":
+        return cls(True, "other", reason, error=True)
 
 
 class DescriptionScanner(Protocol):
@@ -83,9 +92,9 @@ class AnthropicDescriptionScanner:
                 if getattr(b, "type", None) == "tool_use" and b.name == "record_scan":
                     d = b.input
                     return DescVerdict(bool(d.get("poison", True)), str(d.get("kind", "other")), str(d.get("reason", "")))
-            return DescVerdict(True, "other", "scanner returned no verdict")
-        except Exception as exc:  # fail closed
-            return DescVerdict(True, "other", f"scanner unavailable ({type(exc).__name__})")
+            return DescVerdict.errored("scanner returned no verdict")
+        except Exception as exc:  # fail closed, but FLAGGED as an error — never a detection
+            return DescVerdict.errored(f"scanner unavailable ({type(exc).__name__}: {exc})"[:180])
 
 
 @dataclass(slots=True)
@@ -108,9 +117,9 @@ def cache_key(description: str) -> str:
 
 
 def _dump(v: DescVerdict) -> str:
-    return json.dumps({"poison": v.poison, "kind": v.kind, "reason": v.reason})
+    return json.dumps({"poison": v.poison, "kind": v.kind, "reason": v.reason, "error": v.error})
 
 
 def _load(raw: str) -> DescVerdict:
     d = json.loads(raw)
-    return DescVerdict(d["poison"], d.get("kind", "other"), d.get("reason", ""))
+    return DescVerdict(d["poison"], d.get("kind", "other"), d.get("reason", ""), d.get("error", False))

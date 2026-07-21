@@ -26,9 +26,11 @@ def _judge(step_judge):
     """Default to the real haiku step-judge for live benchmark runs (needs a key)."""
     if step_judge is not None:
         return step_judge
-    from ddbt.judge.step_judge import AnthropicStepJudge
+    from ddbt.judge.provider import make_step_judge, preflight
 
-    return AnthropicStepJudge("claude-haiku-4-5")
+    preflight("benchmark")
+
+    return make_step_judge()
 
 
 def splice_ddbt_defense(pipeline, step_judge=None):

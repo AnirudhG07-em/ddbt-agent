@@ -14,6 +14,7 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 from ddbt.core import bootstrap
+from ddbt.judge.provider import make_desc_scanner, preflight
 
 _DIR = pathlib.Path(__file__).resolve().parent / "data" / "mcptox" / "def_tool"
 
@@ -45,8 +46,18 @@ def load_poisons():
     return out
 
 
+def _scan_all(scanner, items, workers: int = 8):
+    """Scan `items` concurrently, preserving order. Descriptions are independent."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        return list(pool.map(scanner.scan, items))
+
+
 def main():
     n_sem = int(sys.argv[1]) if len(sys.argv) > 1 else 40
+    workers = int(sys.argv[2]) if len(sys.argv) > 2 else 8
+    preflight("MCPTox run")
     poisons = load_poisons()
     print(f"MCPTox: {len(poisons)} poisoned tool descriptions loaded\n")
 
@@ -58,22 +69,37 @@ def main():
           f"({len(regex_caught)/len(poisons):.0%}), MISSED {len(regex_missed)}")
 
     # 2) semantic on a bounded sample of the regex-MISSED (the hard ones)
-    from ddbt.judge.desc_scanner import AnthropicDescriptionScanner
-
-    sc = AnthropicDescriptionScanner("claude-haiku-4-5")
+    sc = make_desc_scanner()
     sample = regex_missed[:n_sem]
-    sem_caught = 0
-    for name, desc in sample:
-        if sc.scan(desc).poison:
-            sem_caught += 1
-    print(f"SEMANTIC on {len(sample)} regex-MISSED: caught {sem_caught} ({sem_caught/max(1,len(sample)):.0%})")
+    verdicts = _scan_all(sc, [d for _, d in sample], workers)
+    # An error fails closed to poison=True. Counting those as detections turns a dead API
+    # key into a flawless score, so they are excluded from the rate and reported separately.
+    errs = [v for v in verdicts if v.error]
+    scored = [v for v in verdicts if not v.error]
+    sem_caught = sum(1 for v in scored if v.poison)
+    if errs:
+        print(f"\n!! {len(errs)}/{len(verdicts)} scans FAILED and were excluded — the rate below "
+              f"covers only the {len(scored)} that actually ran.")
+        print(f"   first error: {errs[0].reason}")
+        if not scored:
+            print("   NO scan succeeded — there is no result here. Fix the API key and re-run.\n")
+            return
+    print(f"SEMANTIC on {len(scored)} regex-MISSED: caught {sem_caught} ({sem_caught/max(1,len(scored)):.0%})")
 
-    combined = len(regex_caught) + sem_caught * (len(regex_missed) / max(1, len(sample)))  # extrapolated
+    combined = len(regex_caught) + sem_caught * (len(regex_missed) / max(1, len(scored)))  # extrapolated
     print(f"\nCombined (regex + semantic) projected detection: ~{combined/len(poisons):.0%} of {len(poisons)}")
 
-    # 3) false-positive control
-    fp = sum(1 for d in BENIGN if sc.scan(d).poison)
-    print(f"\nFALSE POSITIVES on {len(BENIGN)} benign descriptions: {fp}  (want 0)")
+    # 3) false-positive control — the load-bearing half of the benchmark. Detection alone is
+    # trivially gamed by calling everything poison; this is what makes the number mean anything.
+    fp_verdicts = _scan_all(sc, BENIGN, workers)
+    fp_errs = [v for v in fp_verdicts if v.error]
+    fp_scored = [(d, v) for d, v in zip(BENIGN, fp_verdicts) if not v.error]
+    fp = sum(1 for _, v in fp_scored if v.poison)
+    print(f"\nFALSE POSITIVES on {len(fp_scored)} benign descriptions: {fp}  (want 0)"
+          + (f"   [{len(fp_errs)} excluded as errors]" if fp_errs else ""))
+    for d, v in fp_scored:
+        if v.poison:
+            print(f"    ! {d[:60]!r} → {v.kind}: {v.reason[:70]}")
 
 
 if __name__ == "__main__":

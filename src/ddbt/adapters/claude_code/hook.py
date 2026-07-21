@@ -29,9 +29,9 @@ def _engine(payload: dict) -> Engine:
     judge-centric design (strict). Model overridable via DDBT_JUDGE_MODEL."""
     session_id = payload.get("session_id", "default")
     cwd = payload.get("cwd") or "."
-    from ddbt.judge.step_judge import AnthropicStepJudge
+    from ddbt.judge.provider import make_step_judge
 
-    judge = AnthropicStepJudge(os.environ.get("DDBT_JUDGE_MODEL", "claude-haiku-4-5"))
+    judge = make_step_judge()
     return Engine(session_id, workspace_root=cwd, step_judge=judge)
 
 

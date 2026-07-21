@@ -1,0 +1,13 @@
+{
+  "name": "ddbt-slides",
+  "version": "1.0.0",
+  "description": "reveal.js deck for ddbt \u2014 Don't Do Bad Things",
+  "scripts": {
+    "start": "python3 -m http.server 8099"
+  },
+  "license": "ISC",
+  "dependencies": {
+    "reveal.js": "^5.2.1"
+  },
+  "private": true
+}

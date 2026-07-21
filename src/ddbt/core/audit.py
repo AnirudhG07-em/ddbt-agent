@@ -48,9 +48,12 @@ class AuditLogger:
                 if e.get("strictness"):
                     flags.append(f"strict={e['strictness']}")
                 fstr = f"  ({', '.join(flags)})" if flags else ""
+                tool, summary = e.get("tool", ""), e.get("summary", "")
+                # _summarize() already prefixes the tool name — don't print it twice
+                what = summary if summary.startswith(tool) else f"{tool} {summary}"
                 lines.append(
                     f"  {tag} [{e.get('checkpoint','?')}] {e.get('state','')}{fstr}  "
-                    f"{e.get('tool','')} {e.get('summary','')}\n      reason: {e.get('reason','')}"
+                    f"{what.rstrip().rstrip(':')}\n      reason: {e.get('reason','')}"
                 )
             elif kind in ("declassify", "declassify_denied"):
                 lines.append(f"  ⤺ {kind}: {e.get('resource','')} ({e.get('reason', e.get('delta_bytes',''))})")

@@ -18,10 +18,10 @@ _MARK = {Effect.ALLOW: f"{G}ALLOW{RST}", Effect.DENY: f"{R}DENY {RST}", Effect.A
 
 
 def _judge():
-    if os.environ.get("ANTHROPIC_API_KEY"):
-        from ddbt.judge.step_judge import AnthropicStepJudge
+    if any(os.environ.get(k) for k in ("ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY")):
+        from ddbt.judge.provider import describe, make_step_judge
 
-        return AnthropicStepJudge("claude-haiku-4-5"), "real haiku judge"
+        return make_step_judge(), f"real judge — {describe()}"
     # offline: scripted verdicts so the demo still runs without a key
     from ddbt.judge.stub import ScriptedStepJudge
 

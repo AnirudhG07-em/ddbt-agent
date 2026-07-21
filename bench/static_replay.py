@@ -101,9 +101,11 @@ def replay(cases: list[Case], step_judge=None, source="corpus", workers: int = 4
     # for fast offline runs. Cases are independent → fan out across `workers` threads (the
     # judge is thread-safe; tune workers to your rate limit).
     if step_judge is None:
-        from ddbt.judge.step_judge import AnthropicStepJudge
+        from ddbt.judge.provider import make_step_judge, preflight
 
-        step_judge = AnthropicStepJudge("claude-haiku-4-5")
+        preflight("static replay")
+
+        step_judge = make_step_judge()
     base = tempfile.mkdtemp(prefix="ddbt-replay-")
     rep = ReplayReport(source=source)
     t0 = time.monotonic()

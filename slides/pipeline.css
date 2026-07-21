@@ -1,0 +1,319 @@
+/* The request-journey animation — light, flat, no gradients.
+   A request travels left-to-right through ten stages. Each fragment advances the
+   travelling packet one stage and swaps the detail pane below. Built entirely by
+   pipeline.js from the STAGES table, so slides.md only needs <div data-pipeline></div>. */
+
+.pipeline {
+  position: relative;
+  width: 100%;
+  font-size: 0.86em;
+  padding-top: 22px; /* headroom for the packet, which rides above the track */
+}
+
+/* fragment triggers drive the animation but must not take up space */
+.pipeline .triggers {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* ---------------- the track of stage nodes ---------------- */
+
+.pipeline .track {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(10, 1fr);
+  gap: 4px;
+  padding: 4px 0 2px;
+}
+
+/* the connecting hairline behind the nodes */
+.pipeline .track::before {
+  content: '';
+  position: absolute;
+  left: 5%;
+  right: 5%;
+  /* 4px track padding + 6px dot margin + half the 34px dot = vertical centre of the dots */
+  top: 27px;
+  height: 1px;
+  background: var(--line-strong);
+  z-index: 0;
+}
+
+.pipeline .node {
+  position: relative;
+  z-index: 1;
+  text-align: center;
+  transition: opacity 0.3s ease;
+  opacity: 0.45;
+}
+
+.pipeline .node .dot {
+  width: 34px;
+  height: 34px;
+  margin: 6px auto 6px;
+  border-radius: 6px;
+  background: #fff;
+  border: 1.5px solid var(--line-strong);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+  transition: all 0.3s ease;
+}
+
+.pipeline .node .nm {
+  display: block;
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--ink);
+}
+.pipeline .node .sub {
+  display: block;
+  font-size: 9.5px;
+  font-weight: 400;
+  color: var(--muted);
+  line-height: 1.2;
+  margin-top: 1px;
+}
+
+/* a stage the packet has already cleared */
+.pipeline .node.done {
+  opacity: 0.85;
+}
+.pipeline .node.done .dot {
+  border-color: var(--blue);
+  color: var(--blue);
+}
+
+/* the stage the packet is at right now */
+.pipeline .node.active {
+  opacity: 1;
+}
+.pipeline .node.active .dot {
+  border-color: var(--blue);
+  border-width: 2px;
+  background: var(--blue);
+  color: #fff;
+}
+.pipeline .node.active .nm {
+  color: var(--blue);
+}
+
+/* stages that change the request's trust state get their own accent when active */
+.pipeline .node.active[data-tone='deny'] .dot {
+  border-color: var(--deny);
+  background: var(--deny);
+}
+.pipeline .node.active[data-tone='deny'] .nm {
+  color: var(--deny);
+}
+.pipeline .node.active[data-tone='untrust'] .dot {
+  border-color: var(--violet);
+  background: var(--violet);
+}
+.pipeline .node.active[data-tone='untrust'] .nm {
+  color: var(--violet);
+}
+
+/* ---------------- the travelling packet ---------------- */
+
+.pipeline .packet {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform: translate(-50%, 0);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 3px;
+  background: #fff;
+  border: 1.5px solid var(--blue);
+  color: var(--blue);
+  white-space: nowrap;
+  transition: transform 0.42s cubic-bezier(0.4, 1.1, 0.5, 1), color 0.3s ease,
+    border-color 0.3s ease;
+  z-index: 3;
+}
+/* the packet turns violet once it is carrying untrusted content */
+.pipeline .packet.untrusted {
+  border-color: var(--violet);
+  color: var(--violet);
+}
+.pipeline .packet.blocked {
+  border-color: var(--deny);
+  color: var(--deny);
+}
+
+/* ---------------- session state bar ---------------- */
+
+.pipeline .statebar {
+  display: flex;
+  gap: 22px;
+  align-items: center;
+  margin: 11px 0 10px;
+  padding: 6px 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.pipeline .statebar .k {
+  color: var(--muted);
+}
+.pipeline .statebar .v {
+  font-weight: 600;
+  color: var(--ink);
+}
+.pipeline .statebar .v.hot {
+  color: var(--ask);
+}
+.pipeline .statebar .v.max {
+  color: var(--deny);
+}
+.pipeline .statebar .v.trust {
+  color: var(--blue);
+}
+.pipeline .statebar .v.untrust {
+  color: var(--violet);
+}
+
+/* ---------------- the detail pane ---------------- */
+
+.pipeline .detail {
+  position: relative;
+  min-height: 340px;
+}
+
+.pipeline .pane {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  transform: translateY(6px);
+  transition: opacity 0.26s ease, transform 0.26s ease;
+  pointer-events: none;
+}
+.pipeline .pane.on {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+}
+
+.pipeline .pane h3 {
+  font-size: 0.8em;
+  margin: 0 0 0.15em;
+  color: var(--blue);
+}
+.pipeline .pane .lead {
+  font-size: 0.66em;
+  line-height: 1.5;
+  color: var(--ink);
+  margin: 0 0 0.65em;
+}
+.pipeline .pane .lead b {
+  font-weight: 600;
+  color: var(--ink-strong);
+}
+
+.pipeline .io {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+  margin-bottom: 10px;
+}
+.pipeline .io div {
+  border-top: 2px solid var(--line-strong);
+  padding-top: 5px;
+  font-size: 0.56em;
+  line-height: 1.4;
+  color: var(--ink);
+}
+.pipeline .io div span {
+  display: block;
+  font-size: 0.84em;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  margin-bottom: 2px;
+}
+.pipeline .io div.in {
+  border-top-color: var(--blue);
+}
+.pipeline .io div.in span {
+  color: var(--blue);
+}
+.pipeline .io div.out {
+  border-top-color: var(--allow);
+}
+.pipeline .io div.out span {
+  color: var(--allow);
+}
+
+.pipeline .pane pre {
+  margin: 0;
+  font-size: 0.5em;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--code-bg);
+}
+.pipeline .pane pre code {
+  display: block;
+  white-space: pre;
+  overflow-x: auto;
+  max-height: 170px;
+  padding: 9px 12px;
+  background: transparent;
+  border: none;
+  color: var(--ink);
+  font-family: var(--mono);
+  line-height: 1.5;
+}
+/* inline emphasis inside the code samples */
+.pipeline .pane pre code b {
+  font-weight: 600;
+  color: var(--ink-strong);
+}
+.pipeline .pane pre code .ok {
+  color: var(--allow);
+  font-weight: 600;
+}
+.pipeline .pane pre code .no {
+  color: var(--deny);
+  font-weight: 600;
+}
+.pipeline .pane pre code .wa {
+  color: var(--ask);
+  font-weight: 600;
+}
+.pipeline .pane pre code .tr {
+  color: var(--blue);
+}
+.pipeline .pane pre code .un {
+  color: var(--violet);
+}
+.pipeline .pane pre code .dim {
+  color: #94a3b8;
+}
+
+/* “key point” line under each pane */
+.pipeline .keypt {
+  margin-top: 9px;
+  font-size: 0.58em;
+  line-height: 1.45;
+  color: var(--ink);
+  border-left: 3px solid var(--blue);
+  padding-left: 9px;
+}
+.pipeline .keypt b {
+  font-weight: 600;
+  color: var(--ink-strong);
+}

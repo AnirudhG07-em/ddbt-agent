@@ -132,10 +132,17 @@ def semantic_scan(text: str, where: str, scanner=None) -> list[Finding]:
         v = _load(cache[key])
     else:
         v = scanner.scan(text)
-        cache[key] = _dump(v)
-        cache_file.parent.mkdir(parents=True, exist_ok=True)
-        cache_file.write_text(json.dumps(cache))
-    if v.poison:
+        # NEVER cache an error verdict: it fails closed to poison=True, so caching it would
+        # brand a description as poisoned forever on the strength of one dead API key.
+        if not v.error:
+            cache[key] = _dump(v)
+            cache_file.parent.mkdir(parents=True, exist_ok=True)
+            cache_file.write_text(json.dumps(cache))
+    if v.error:
+        # still a HOLD (fail closed) — but recorded as "could not check", not "found poison",
+        # so the audit trail never claims a detection we did not actually make.
+        findings.append(Finding("hold", "tool_scan_unavailable", f"{v.reason} ({where})"))
+    elif v.poison:
         findings.append(Finding("hold", "tool_poisoning_semantic", f"{v.kind}: {v.reason} ({where})"))
     return findings
 

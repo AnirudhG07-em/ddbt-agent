@@ -126,9 +126,11 @@ class RJReport:
 
 def score(records: list[RJRecord], step_judge=None, workers: int = 4, block_on=(Effect.DENY, Effect.ASK), ddbd=True) -> RJReport:
     if step_judge is None:
-        from ddbt.judge.step_judge import AnthropicStepJudge
+        from ddbt.judge.provider import make_step_judge, preflight
 
-        step_judge = AnthropicStepJudge("claude-haiku-4-5")
+        preflight("R-Judge run")
+
+        step_judge = make_step_judge()
     base = tempfile.mkdtemp(prefix="ddbt-rjudge-")
     rep = RJReport()
     t0 = time.monotonic()

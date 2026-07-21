@@ -54,7 +54,13 @@ uv venv && uv pip install -e ".[dev]"
 export ANTHROPIC_API_KEY=...                 # the decider is an LLM (claude-haiku-4-5)
 uv run pytest                                # uses deterministic stub judges (no key needed)
 uv run python demo/run_demos.py              # real judge if key set, else scripted stub
+uv run python demo/demo_mcp.py               # narrated walkthrough: benign · malicious · MCP
 ```
+
+`demo/demo_mcp.py` replays one real InjecAgent record (honest step → hijacked step) and one
+real MCPTox poisoned tool description, printing the exact facts the judge sees at each
+step — then an honest report of what is still missing for MCP servers. `--stub` forces the
+offline deterministic path; `--slow` paces it for presenting.
 
 Wire into Claude Code (the judge runs on every tool call):
 ```bash

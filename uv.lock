@@ -871,6 +871,9 @@ dev = [
     { name = "pytest" },
     { name = "pytest-cov" },
 ]
+gemini = [
+    { name = "google-genai" },
+]
 mcp = [
     { name = "mcp" },
 ]
@@ -880,12 +883,13 @@ requires-dist = [
     { name = "agentdojo", marker = "extra == 'agentdyn'", git = "https://github.com/leolee99/AgentDyn.git" },
     { name = "agentdojo", marker = "extra == 'bench'" },
     { name = "anthropic", specifier = ">=0.40" },
+    { name = "google-genai", marker = "extra == 'gemini'", specifier = ">=1.0" },
     { name = "hypothesis", marker = "extra == 'dev'", specifier = ">=6" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.2" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
     { name = "pytest-cov", marker = "extra == 'dev'" },
 ]
-provides-extras = ["mcp", "bench", "agentdyn", "dev"]
+provides-extras = ["mcp", "gemini", "bench", "agentdyn", "dev"]
 
 [[package]]
 name = "deepdiff"

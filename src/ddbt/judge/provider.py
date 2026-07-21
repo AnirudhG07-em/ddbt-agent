@@ -1,0 +1,150 @@
+"""Which LLM backs the judge — one place, so every entry point agrees.
+
+The decider is an LLM, but WHICH LLM is a deployment choice, not an architectural one.
+Both backends share the same prompts, the same forced-tool-call schema and the same
+fail-closed behaviour, so results are comparable across providers.
+
+Selection order:
+  1. ``DDBT_PROVIDER``      — "anthropic" | "gemini" (explicit wins)
+  2. auto-detect from keys  — GEMINI_API_KEY / GOOGLE_API_KEY → gemini,
+                              else ANTHROPIC_API_KEY (and no Gemini key) → anthropic
+  3. default                — GEMINI (the project default)
+
+``DDBT_JUDGE_MODEL`` overrides the model id for whichever provider is chosen.
+
+    export GEMINI_API_KEY=...                     # → gemini-2.5-flash (default)
+    export DDBT_PROVIDER=anthropic                # → claude-haiku-4-5
+    export DDBT_JUDGE_MODEL=gemini-2.5-pro        # → override the model id
+
+Every entry point prints ``describe()`` before a run. If that line does not say what you
+expect, stop: the judge fails CLOSED without a key, and a fail-closed run looks exactly
+like a perfect score until you check the benign control.
+"""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+ANTHROPIC_DEFAULT = "claude-haiku-4-5"
+GEMINI_DEFAULT = "gemini-2.5-flash"
+
+_env_loaded = False
+
+
+def load_env() -> None:
+    """Load ``.env`` into the environment, once, from the cwd or any parent directory.
+
+    Hooks, benchmarks and demos are all launched in ways that do not inherit an
+    interactively-exported key, and a missing key does not raise — the judge fails CLOSED,
+    which is indistinguishable from a confident DENY. That failure mode already produced
+    one bogus 100% benchmark result, so the key is loaded here, in the one place every
+    entry point goes through.
+
+    Real environment variables always win: ``.env`` only fills in what is not already set.
+    Hand-rolled rather than depending on python-dotenv — it is a dozen lines and this
+    runs on the security path.
+    """
+    global _env_loaded
+    if _env_loaded:
+        return
+    _env_loaded = True
+    here = Path.cwd().resolve()
+    for d in (here, *here.parents):
+        f = d / ".env"
+        if not f.is_file():
+            continue
+        try:
+            for raw in f.read_text().splitlines():
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, _, v = line.partition("=")
+                k = k.strip().removeprefix("export ").strip()
+                v = v.strip().strip('"').strip("'")
+                if k and k not in os.environ:  # never override the real environment
+                    os.environ[k] = v
+        except OSError:
+            pass
+        return
+
+
+def active_provider() -> str:
+    """Resolve the provider name without constructing anything."""
+    load_env()
+    explicit = (os.environ.get("DDBT_PROVIDER") or "").strip().lower()
+    if explicit in ("anthropic", "claude"):
+        return "anthropic"
+    if explicit in ("gemini", "google"):
+        return "gemini"
+    if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
+        return "gemini"
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        return "anthropic"
+    return "gemini"  # project default — chosen even with no key, so failures say "gemini"
+
+
+def default_model(provider: str | None = None) -> str:
+    provider = provider or active_provider()
+    override = os.environ.get("DDBT_JUDGE_MODEL")
+    if override:
+        return override
+    return GEMINI_DEFAULT if provider == "gemini" else ANTHROPIC_DEFAULT
+
+
+def make_step_judge(model: str | None = None, **kwargs):
+    """Build the step-judge for the configured provider."""
+    provider = active_provider()
+    model = model or default_model(provider)
+    if provider == "gemini":
+        from ddbt.judge.gemini import GeminiStepJudge
+
+        return GeminiStepJudge(model, **kwargs)
+    from ddbt.judge.step_judge import AnthropicStepJudge
+
+    return AnthropicStepJudge(model, **kwargs)
+
+
+def make_desc_scanner(model: str | None = None):
+    """Build the tool-description poison scanner for the configured provider."""
+    provider = active_provider()
+    model = model or default_model(provider)
+    if provider == "gemini":
+        from ddbt.judge.gemini import GeminiDescriptionScanner
+
+        return GeminiDescriptionScanner(model)
+    from ddbt.judge.desc_scanner import AnthropicDescriptionScanner
+
+    return AnthropicDescriptionScanner(model)
+
+
+def key_present(provider: str | None = None) -> bool:
+    """Is a usable API key actually set for the chosen provider?"""
+    provider = provider or active_provider()
+    if provider == "gemini":
+        return bool(os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"))
+    return bool(os.environ.get("ANTHROPIC_API_KEY"))
+
+
+def describe() -> str:
+    """One line for logs/benchmark headers: which model actually decided."""
+    provider = active_provider()
+    return f"{provider}:{default_model(provider)}"
+
+
+def preflight(what: str = "run") -> None:
+    """Print which model will decide, and abort loudly if no key is set.
+
+    Benchmarks MUST call this. The judge and the scanner both fail closed, so without a
+    key every case returns "blocked" and the run reports a flawless score. Refusing to
+    start is the only safe behaviour — a wrong number is worse than no number.
+    """
+    provider = active_provider()
+    print(f"decider: {describe()}")
+    if not key_present(provider):
+        var = "GEMINI_API_KEY" if provider == "gemini" else "ANTHROPIC_API_KEY"
+        raise SystemExit(
+            f"\n  ABORT — no {var} found (checked the environment and .env).\n"
+            f"  Every judgement would fail closed, and this {what} would report a\n"
+            f"  perfect score made entirely of errors. Set the key and re-run.\n"
+        )

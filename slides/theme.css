@@ -1,0 +1,438 @@
+/* ddbt deck theme — light, academic, print-clean.
+   White background, near-black text, one blue accent, hairline rules.
+   No gradients, no shadows, no tinted panels.
+
+   Semantic colours are used sparingly and only where they carry meaning:
+     blue   = trusted (the user's goal)
+     violet = untrusted (quarantined tool output)
+     green  = allow · amber = ask a human · red = deny                          */
+
+@import url('https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@300;400;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
+
+:root {
+  --ink: #16202e; /* body text */
+  --ink-strong: #0b1220; /* headings */
+  --muted: #64748b; /* secondary text */
+  --line: #e2e8f0; /* hairlines */
+  --line-strong: #cbd5e1;
+  --code-bg: #f8fafc;
+
+  --blue: #0073a3; /* primary accent — rules, headings, trusted */
+  --blue-2: #2563eb; /* links */
+  --violet: #6d28d9; /* untrusted / quarantine */
+  --allow: #047857;
+  --ask: #b45309;
+  --deny: #b91c1c;
+
+  --sans: 'Source Sans 3', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --pad-t: 4.2vh;
+  --pad-r: 4.5vw;
+  --pad-b: 3.4vh;
+  --pad-l: 4vw;
+}
+
+.reveal-viewport {
+  background: #fff;
+}
+
+.reveal {
+  font-family: var(--sans);
+  font-weight: 300;
+  font-size: 30px;
+  color: var(--ink);
+}
+
+.reveal .slides {
+  text-align: left;
+}
+.reveal .slides section:not(.stack) {
+  text-align: left;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  padding: var(--pad-t) var(--pad-r) var(--pad-b) var(--pad-l);
+}
+
+/* ---------- headings ---------- */
+
+.reveal h1,
+.reveal h2,
+.reveal h3,
+.reveal h4 {
+  font-family: var(--sans);
+  text-transform: none;
+  color: var(--ink-strong);
+  line-height: 1.15;
+  letter-spacing: -0.01em;
+}
+.reveal h1 {
+  font-weight: 300;
+  font-size: 2.1em;
+  margin: 0 0 0.3em;
+}
+.reveal h2 {
+  font-weight: 600;
+  font-size: 1.22em;
+  margin: 0 0 0.75em;
+  padding-bottom: 0.32em;
+  border-bottom: 2.5px solid var(--blue);
+}
+.reveal h3 {
+  font-weight: 600;
+  font-size: 0.95em;
+  color: var(--blue);
+  margin: 0 0 0.3em;
+}
+.reveal h4 {
+  font-weight: 700;
+  font-size: 0.7em;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  margin: 0 0 0.4em;
+}
+
+/* ---------- body ---------- */
+
+.reveal p {
+  font-size: 0.92em;
+  line-height: 1.6;
+  margin: 0 0 0.6em;
+}
+.reveal ul,
+.reveal ol {
+  font-size: 0.92em;
+  line-height: 1.6;
+  margin: 0;
+  padding-left: 1.15em;
+}
+.reveal li {
+  margin-bottom: 0.4em;
+}
+.reveal li::marker {
+  color: var(--blue);
+}
+.reveal strong {
+  font-weight: 600;
+  color: var(--ink-strong);
+}
+.reveal em {
+  font-style: italic;
+  color: var(--muted);
+}
+.reveal a {
+  color: var(--blue-2);
+  text-decoration: none;
+  border-bottom: 1px solid var(--line-strong);
+}
+
+.subtitle {
+  font-size: 1.15em;
+  font-weight: 300;
+  color: var(--muted);
+  margin-top: -0.1em !important;
+  max-width: 44ch;
+}
+.small {
+  font-size: 0.74em;
+}
+.muted {
+  color: var(--muted);
+}
+.center {
+  text-align: center;
+}
+.big {
+  font-size: 1.3em;
+  font-weight: 400;
+  line-height: 1.35;
+}
+
+/* ---------- code ---------- */
+
+.reveal code {
+  font-family: var(--mono);
+  font-size: 0.86em;
+  background: #f1f5f9;
+  padding: 0.08em 0.32em;
+  border-radius: 3px;
+  color: #0f2b45;
+}
+.reveal pre {
+  font-family: var(--mono);
+  font-size: 0.52em;
+  width: 100%;
+  margin: 0.45em 0;
+  box-shadow: none;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--code-bg);
+}
+.reveal pre code {
+  display: block;
+  padding: 0.85em 1.05em;
+  max-height: 470px;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  line-height: 1.5;
+  overflow: auto;
+  color: var(--ink);
+}
+
+/* ---------- tables ---------- */
+
+.reveal table {
+  font-size: 0.66em;
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0.3em 0;
+}
+.reveal table th {
+  color: var(--blue);
+  text-align: left;
+  font-weight: 600;
+  border-bottom: 2px solid var(--line-strong);
+  padding: 0.4em 0.6em;
+}
+.reveal table td {
+  border-bottom: 1px solid var(--line);
+  padding: 0.38em 0.6em;
+  vertical-align: top;
+}
+
+/* ---------- quotes ---------- */
+
+.reveal blockquote {
+  width: 100%;
+  font-size: 0.86em;
+  font-style: normal;
+  background: none;
+  border: none;
+  border-left: 3px solid var(--blue);
+  border-radius: 0;
+  box-shadow: none;
+  padding: 0.15em 0 0.15em 0.85em;
+  margin: 0.6em 0;
+  color: var(--ink);
+}
+.reveal blockquote p:first-child {
+  margin-top: 0;
+}
+.reveal blockquote p:last-child {
+  margin-bottom: 0;
+}
+
+/* ---------- layout helpers ---------- */
+
+.cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.4em;
+  align-items: start;
+}
+.cols-3 {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1.1em;
+  align-items: start;
+}
+
+/* a "card" here is just a labelled block with a hairline top rule — no fill */
+.card {
+  font-size: 0.8em;
+  padding-top: 0.5em;
+  border-top: 2px solid var(--line-strong);
+}
+.card h4 {
+  margin: 0 0 0.35em;
+  font-size: 0.78em;
+  color: var(--ink-strong);
+}
+.card p,
+.card ul {
+  font-size: 1em;
+  line-height: 1.5;
+}
+.card p:last-child,
+.card ul:last-child {
+  margin-bottom: 0;
+}
+.card ul {
+  padding-left: 1em;
+}
+
+/* semantic variants recolour the top rule and the label only */
+.card.good {
+  border-top-color: var(--allow);
+}
+.card.good h4 {
+  color: var(--allow);
+}
+.card.bad {
+  border-top-color: var(--deny);
+}
+.card.bad h4 {
+  color: var(--deny);
+}
+.card.warn {
+  border-top-color: var(--ask);
+}
+.card.warn h4 {
+  color: var(--ask);
+}
+.card.info {
+  border-top-color: var(--blue);
+}
+.card.info h4 {
+  color: var(--blue);
+}
+
+/* status pills */
+.pill {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 0.62em;
+  font-weight: 600;
+  padding: 0.1em 0.5em;
+  border-radius: 3px;
+  border: 1px solid currentColor;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.pill.have {
+  color: var(--allow);
+}
+.pill.part {
+  color: var(--ask);
+}
+.pill.none {
+  color: var(--deny);
+}
+
+/* inline verdict chips */
+.verdict {
+  font-family: var(--mono);
+  font-weight: 600;
+  font-size: 0.88em;
+  padding: 0.05em 0.4em;
+  border-radius: 3px;
+  border: 1px solid currentColor;
+}
+.verdict.allow {
+  color: var(--allow);
+}
+.verdict.ask {
+  color: var(--ask);
+}
+.verdict.deny {
+  color: var(--deny);
+}
+
+/* big number + label */
+.stat {
+  text-align: center;
+}
+.stat .num {
+  font-family: var(--mono);
+  font-size: 2em;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--blue);
+}
+.stat .lbl {
+  font-size: 0.62em;
+  color: var(--muted);
+  line-height: 1.45;
+  margin-top: 0.45em;
+}
+.stat.good .num {
+  color: var(--allow);
+}
+.stat.bad .num {
+  color: var(--deny);
+}
+
+.foot {
+  font-size: 0.62em;
+  color: var(--muted);
+  line-height: 1.5;
+  margin-top: 0.9em;
+  padding-top: 0.5em;
+  border-top: 1px solid var(--line);
+}
+
+/* roadmap entrance */
+.stagger ol li,
+.stagger ul li {
+  animation: rise 0.4s ease-out both;
+}
+.stagger li:nth-child(1) {
+  animation-delay: 0.04s;
+}
+.stagger li:nth-child(2) {
+  animation-delay: 0.12s;
+}
+.stagger li:nth-child(3) {
+  animation-delay: 0.2s;
+}
+.stagger li:nth-child(4) {
+  animation-delay: 0.28s;
+}
+.stagger li:nth-child(5) {
+  animation-delay: 0.36s;
+}
+.stagger li:nth-child(6) {
+  animation-delay: 0.44s;
+}
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ---------- title / closing slide ---------- */
+
+.reveal section.title-slide {
+  display: flex !important;
+  flex-direction: column;
+  justify-content: center;
+}
+.title-slide h1 {
+  font-size: 2.6em;
+  margin-bottom: 0.12em;
+  border: none;
+}
+.title-slide h1 strong {
+  color: var(--blue);
+  font-weight: 600;
+}
+.title-slide .rule {
+  width: 108px;
+  height: 4px;
+  background: var(--blue);
+  border-radius: 0;
+  margin: 0.9em 0 1em;
+}
+
+/* ---------- reveal chrome ---------- */
+
+.reveal .progress {
+  color: var(--blue);
+}
+.reveal .controls {
+  color: var(--blue);
+}
+.reveal .slide-number {
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.5em;
+}

@@ -15,7 +15,8 @@ from dataclasses import dataclass
 
 from ddbt.core import bootstrap
 from ddbt.core.audit import AuditLogger
-from ddbt.judge.step_judge import AnthropicStepJudge, StepFacts
+from ddbt.judge.provider import make_step_judge
+from ddbt.judge.step_judge import StepFacts
 from ddbt.store.session import SessionStore
 
 _CONTINUATION = {"continue", "keep going", "go on", "next", "proceed", "yes", "do it", "go ahead", "resume"}
@@ -110,7 +111,7 @@ class Engine:
         self.ddbd = ddbd
         self.store = SessionStore(session_id, base_dir=base_dir)
         self.audit = AuditLogger(self.store)
-        self.step_judge = step_judge or AnthropicStepJudge()
+        self.step_judge = step_judge or make_step_judge()
         self.goal = self.store.get_meta("goal", "") or ""
 
     # ---- lifecycle ----

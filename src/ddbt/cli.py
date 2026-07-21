@@ -109,7 +109,11 @@ def _cmd_bench(args: argparse.Namespace) -> int:
             cases = sr.load_injecagent(args.data)
         else:
             cases = sr.load_agentdojo(suite, limit=args.limit)
-        rep = sr.replay(cases, source=f"{args.source}:{suite}" if args.source == "agentdojo" else "injecagent")
+        rep = sr.replay(
+            cases,
+            source=f"{args.source}:{suite}" if args.source == "agentdojo" else "injecagent",
+            workers=args.workers,
+        )
         print(rep.render())
         return 0
 

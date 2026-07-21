@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+    <title>ddbt — Don't Do Bad Things</title>
+
+    <link rel="stylesheet" href="node_modules/reveal.js/dist/reset.css" />
+    <link rel="stylesheet" href="node_modules/reveal.js/dist/reveal.css" />
+    <link rel="stylesheet" href="theme.css" />
+    <link rel="stylesheet" href="pipeline.css" />
+    <!-- no highlight.js theme: both bundled ones are dark. Code is styled in theme.css. -->
+  </head>
+  <body>
+    <div class="reveal">
+      <div class="slides">
+        <!-- All content lives in slides.md; `---` separates slides, `--` separates vertical stacks. -->
+        <section
+          data-markdown="slides.md"
+          data-separator="^\r?\n---\r?\n$"
+          data-separator-vertical="^\r?\n--\r?\n$"
+          data-separator-notes="^Note:"
+          data-charset="utf-8"
+        ></section>
+      </div>
+    </div>
+
+    <script type="module">
+      import Reveal from './node_modules/reveal.js/dist/reveal.esm.js';
+      import Markdown from './node_modules/reveal.js/plugin/markdown/markdown.esm.js';
+      import Highlight from './node_modules/reveal.js/plugin/highlight/highlight.esm.js';
+      import Notes from './node_modules/reveal.js/plugin/notes/notes.esm.js';
+      import { initPipeline } from './pipeline.js';
+
+      const deck = new Reveal({
+        plugins: [Markdown, Highlight, Notes],
+        hash: true,
+        slideNumber: 'c/t',
+        transition: 'fade',
+        transitionSpeed: 'fast',
+        backgroundTransition: 'fade',
+        width: 1280,
+        height: 760,
+        margin: 0.045,
+        minScale: 0.2,
+        maxScale: 1.6,
+        // fragments drive the pipeline animation, so keep them in the URL for resuming
+        fragmentInURL: true,
+      });
+
+      deck.initialize().then(() => initPipeline(deck));
+    </script>
+  </body>
+</html>
