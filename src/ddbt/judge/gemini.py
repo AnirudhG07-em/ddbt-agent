@@ -69,14 +69,39 @@ def _config(system: str, tool: dict):
     )
 
 
+_client_lock = threading.Lock()
+_shared_client = None
+
+
 def _client():
-    """Client from GEMINI_API_KEY / GOOGLE_API_KEY (the SDK reads either from the env)."""
-    import os
+    """One shared, retrying client for the whole process.
 
-    from google import genai
+    Benchmarks fan out across worker threads. Creating a client per thread raced on the
+    underlying connection pool and produced `ReadError: Bad file descriptor` — which fails
+    CLOSED and is then indistinguishable from a real detection, so it silently corrupts
+    results. One client, built once under a lock, with retries on transient errors (the
+    Anthropic backend gets these from `max_retries=8`; Gemini needs them stated).
+    """
+    global _shared_client
+    with _client_lock:
+        if _shared_client is None:
+            import os
 
-    key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
-    return genai.Client(api_key=key) if key else genai.Client()
+            from google import genai
+            from google.genai import types
+
+            from ddbt.judge.provider import load_env
+
+            load_env()
+            key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+            http = types.HttpOptions(
+                timeout=120_000,  # ms
+                retry_options=types.HttpRetryOptions(attempts=8, initial_delay=1.0, max_delay=30.0),
+            )
+            _shared_client = genai.Client(api_key=key, http_options=http) if key else genai.Client(
+                http_options=http
+            )
+        return _shared_client
 
 
 def _first_call(resp, name: str) -> dict | None:

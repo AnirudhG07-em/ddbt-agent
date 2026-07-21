@@ -132,6 +132,9 @@ def describe() -> str:
     return f"{provider}:{default_model(provider)}"
 
 
+_announced = False
+
+
 def preflight(what: str = "run") -> None:
     """Print which model will decide, and abort loudly if no key is set.
 
@@ -139,8 +142,11 @@ def preflight(what: str = "run") -> None:
     key every case returns "blocked" and the run reports a flawless score. Refusing to
     start is the only safe behaviour — a wrong number is worse than no number.
     """
+    global _announced
     provider = active_provider()
-    print(f"decider: {describe()}")
+    if not _announced:  # a runner and its suite may both call this; announce once
+        print(f"decider: {describe()}")
+        _announced = True
     if not key_present(provider):
         var = "GEMINI_API_KEY" if provider == "gemini" else "ANTHROPIC_API_KEY"
         raise SystemExit(
