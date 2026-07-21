@@ -70,13 +70,19 @@ def run_mcptox(limit, workers):
 SUITES = {"rjudge": run_rjudge, "injecagent": run_injecagent, "mcptox": run_mcptox}
 
 if __name__ == "__main__":
-    suite = sys.argv[1] if len(sys.argv) > 1 else ["rjudge","injecagent", "mcptox"]
-    for suite in SUITES:
-        if suite not in SUITES:
-            sys.exit(f"unknown suite {suite!r} — choose one of: {', '.join(SUITES)}")
-        limit = int(sys.argv[2]) if len(sys.argv) > 2 else None
-        workers = int(sys.argv[3]) if len(sys.argv) > 3 else DEFAULT_WORKERS
+    # a named suite runs ONLY that suite; "all" (or no argument) runs every one in turn.
+    requested = sys.argv[1] if len(sys.argv) > 1 else "all"
+    if requested == "all":
+        chosen = list(SUITES)
+    elif requested in SUITES:
+        chosen = [requested]
+    else:
+        sys.exit(f"unknown suite {requested!r} — choose one of: {', '.join(SUITES)}, or 'all'")
 
-        preflight(f"{suite} run")  # prints the decider, aborts if no key
-        print(f"suite: {suite}  limit: {limit or 'all'}  workers: {workers}\n")
+    limit = int(sys.argv[2]) if len(sys.argv) > 2 else None
+    workers = int(sys.argv[3]) if len(sys.argv) > 3 else DEFAULT_WORKERS
+
+    preflight("benchmark run")  # prints the decider, aborts if no key
+    for suite in chosen:
+        print(f"\n{'=' * 70}\nsuite: {suite}  limit: {limit or 'all'}  workers: {workers}\n{'=' * 70}")
         SUITES[suite](limit, workers)

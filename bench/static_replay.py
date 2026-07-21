@@ -32,6 +32,7 @@ class Case:
     calls: list  # [(tool_name, args_dict), ...]
     label: str  # "attack" | "benign"
     tainted: bool = False  # attack instruction arrived via untrusted content
+    taint_text: str = ""  # the ACTUAL injected text, seeded into quarantine before the calls
 
 
 @dataclass(slots=True)
@@ -80,8 +81,15 @@ def _run_case(i: int, case: Case, step_judge, base: str) -> tuple[str, list, boo
     eng = Engine(f"rp-{i}", workspace_root=base, base_dir=base, step_judge=step_judge)
     eng.on_session_start("startup", base)
     eng.on_user_prompt(case.goal)
-    if case.tainted:  # the attack instruction came from untrusted content → taint session
-        eng.record_result("WebFetch", {"url": "injected"}, {"content": "injection"})
+    if case.tainted:
+        # Seed the REAL injected text, not a placeholder. In a live attack the destination
+        # reaches the agent inside untrusted content, and that is exactly what provenance
+        # keys on — a stub string would leave the attacker's address with no recorded origin,
+        # so the replay would score the defence without exercising the mechanism it relies on.
+        eng.record_result(
+            "WebFetch", {"url": "injected"},
+            {"content": case.taint_text or "injection"},
+        )
     effects, errored = [], False
     for tool, args in case.calls:
         d = eng.evaluate_action(tool, args or {})
@@ -207,5 +215,6 @@ def load_injecagent(path: str, tainted: bool = True) -> list[Case]:
             atk_tools = [atk_tools]
         if atk_tools:
             calls = [(t, {"instruction": atk_instr}) for t in atk_tools]
-            cases.append(Case(id=f"ia/{i}/{'+'.join(atk_tools)}", goal=goal, calls=calls, label="attack", tainted=tainted))
+            cases.append(Case(id=f"ia/{i}/{'+'.join(atk_tools)}", goal=goal, calls=calls,
+                              label="attack", tainted=tainted, taint_text=atk_instr))
     return cases

@@ -13,7 +13,7 @@ import enum
 import re
 from dataclasses import dataclass
 
-from ddbt.core import bootstrap
+from ddbt.core import bootstrap, provenance
 from ddbt.core.audit import AuditLogger
 from ddbt.judge.provider import make_step_judge
 from ddbt.judge.step_judge import StepFacts
@@ -106,13 +106,17 @@ def _summarize(tool: str, tool_input: dict) -> str:
 
 
 class Engine:
-    def __init__(self, session_id, workspace_root, base_dir=None, step_judge=None, ddbd=True, **_legacy):
+    def __init__(self, session_id, workspace_root, base_dir=None, step_judge=None, ddbd=True,
+                 error_effect="ask", **_legacy):
         # ddbd=True enables AXIS 2 (the "Don't Do Bad Things" ethics/harm layer). Axis 1
         # (goal-fidelity / anti-injection) is ALWAYS on. Benchmarks measuring operational
         # safety (e.g. R-Judge) set ddbd=False to isolate axis 1.
         self.session_id = session_id
         self.workspace_root = workspace_root
         self.ddbd = ddbd
+        # what a JUDGE INFRA FAILURE maps to — "ask" (a human decides) for interactive use,
+        # "deny" for benchmarks that want to measure strict fail-closed behaviour.
+        self.error_effect = Effect.DENY if str(error_effect).lower() == "deny" else Effect.ASK
         self.store = SessionStore(session_id, base_dir=base_dir)
         self.audit = AuditLogger(self.store)
         self.step_judge = step_judge or make_step_judge()
@@ -151,12 +155,18 @@ class Engine:
             aid = self.audit.decision(checkpoint="noop", state="allow", tool=tool_name, summary="no system effect", reason="pure tool")
             return Decision(Effect.ALLOW, "allow", "noop", "pure tool, no system effect", audit_id=aid)
 
+        # show the judge the quarantined output that MENTIONS this step's arguments, not
+        # merely the most recent — otherwise an injection ingested a few steps ago drops out
+        # of the window and an attacker only has to wait before acting on it.
+        values = [v for v, is_id in self._consequential_values(tool_input) if is_id]
+        evidence = self.store.quarantine_matching(values, limit=2) or self.store.recent_quarantine(2)
+
         facts = StepFacts(
             goal=self.goal,
             tool=tool_name,
             args=tool_input,
             input_labels=self._labels(tool_input),
-            quarantined=self.store.recent_quarantine(3),
+            quarantined=evidence,
             history=self._history(),
         )
         verdict = self.step_judge.judge(facts)
@@ -187,7 +197,12 @@ class Engine:
         (harm) denies when ddbd is on; then adaptive strictness — a session that has shown
         malicious signals (high suspicion) progressively tightens toward lockdown."""
         if verdict.error:
-            return Effect.DENY, "judge-error"
+            # An infra failure (rate limit, timeout, dead key) is NOT a security finding.
+            # Hard-denying it means a 429 blocks a tool call in your editor, which makes the
+            # sandbox undeployable — and it disagrees with hook.py, which already emits "ask"
+            # when the sandbox itself crashes. ASK keeps a human in the loop without pretending
+            # we judged anything. Benchmarks set error_effect="deny" to measure fail-closed.
+            return self.error_effect, "judge-error"
         if verdict.deviation:
             return Effect.DENY, "goal-fidelity"  # axis 1 — anti-injection, non-negotiable
         if self.ddbd and verdict.harmful:
@@ -231,26 +246,76 @@ class Engine:
             self.store.increment_meta("suspicion", w)  # atomic: concurrent hooks can't lose it
 
     def _labels(self, tool_input: dict) -> list[str]:
-        """Keyword-free provenance: flag any argument value that traces to quarantined
-        (untrusted) tool output rather than the user's goal — the decisive 'is this value
-        user-named or injection-derived?' signal. Mechanical string matching, no wordlists."""
+        """Where did each argument come from? — the decisive anti-injection signal.
+
+        The question is NOT "did this value appear in tool output" (almost every legitimate
+        value does — read-then-act is the normal pattern) but "could an attacker have chosen
+        it?". That is answered structurally by core/provenance.py and looked up here:
+
+          user-named       it appears in the trusted goal
+          grounded         it was a FIELD in some tool result — the producing system chose it
+          injection-derived it appears only INSIDE free text, so its author chose it
+          unknown          never seen before this step
+
+        No wordlists, no model, and no recency window — a lookup, so it does not decay over
+        a long session.
+        """
         labels: list[str] = []
         n = self.store.quarantine_count()
         if n:
             labels.append(f"session has ingested {n} quarantined (untrusted) tool output(s)")
-        quarantined = " ".join(self.store.recent_quarantine(5)).lower()
         goal = (self.goal or "").lower()
-        for val in _string_values(tool_input):
+
+        for val, is_identifier in self._consequential_values(tool_input):
             v = val.strip().lower()
-            if len(v) < 4:
-                continue
             if v in goal:
-                labels.append(f"arg value {val[:60]!r} is named in the user goal → user-named")
-            elif quarantined and v in quarantined:
+                labels.append(f"arg {val[:60]!r} is named in the user goal → USER-NAMED")
+                continue
+            sightings = self.store.lookup_provenance(v)
+            if not sightings:
+                # Only worth saying for a DESTINATION. Prose arguments (a subject line, a
+                # message body) have nowhere to land, so "unknown origin" on them is noise
+                # that buries the one label that matters.
+                if is_identifier:
+                    labels.append(
+                        f"arg {val[:60]!r} is a destination that appears neither in the goal "
+                        f"nor in any tool result → UNKNOWN origin"
+                    )
+                continue
+            field = [s for s in sightings if s["origin"] == provenance.FIELD]
+            if field:
                 labels.append(
-                    f"arg value {val[:60]!r} traces to untrusted tool output, NOT the user goal → injection-derived"
+                    f"arg {val[:60]!r} was a structured field ({field[0]['path']}) returned by "
+                    f"{field[0]['tool']} → GROUNDED (the tool's own data, not attacker-written text)"
+                )
+            else:
+                s = sightings[0]
+                labels.append(
+                    f"arg {val[:60]!r} appears ONLY inside untrusted free text ({s['path']}) from "
+                    f"{s['tool']} → INJECTION-DERIVED (whoever wrote that text chose this value)"
                 )
         return labels
+
+    def _consequential_values(self, tool_input: dict) -> list[tuple[str, bool]]:
+        """This step's argument values, as (value, is_identifier).
+
+        Identifiers — addresses, URLs, paths, handles — decide where an effect LANDS, which
+        is what provenance is for. Other short values are still looked up (so a filename the
+        user named gets credit) but are not reported when nothing is known about them.
+        """
+        out: list[tuple[str, bool]] = []
+        seen: set[str] = set()
+        for val in _string_values(tool_input):
+            identifiers = provenance.extract(val)
+            for _, text in identifiers:
+                if text.lower() not in seen:
+                    seen.add(text.lower())
+                    out.append((text, True))
+            v = val.strip()
+            if 4 <= len(v) <= 120 and v.lower() not in seen and not identifiers:
+                seen.add(v.lower())
+                out.append((v, False))
+        return out
 
     def _history(self, n: int = 6) -> list[str]:
         """Recent prior steps this session (trajectory context for the judge): what the
@@ -259,16 +324,38 @@ class Engine:
         return [f"{e.get('tool','')} {e.get('summary','')} → {e.get('state','')}" for e in decisions[-n:]]
 
     def record_result(self, tool_name: str, tool_input: dict, tool_response: dict, cwd: str | None = None) -> None:
-        # every tool output is quarantined (untrusted-by-default) so the judge can inspect
-        # later steps for injected/stray behaviour — and so it never leaks to a live sink.
+        """Take in what a step returned: quarantine the text, and index where its values sat.
+
+        Both halves matter. The quarantine keeps the raw content so a later step can be shown
+        the evidence; the provenance index records, for every identifier in the result,
+        whether it was a structured FIELD or was embedded in free text. That index is what
+        lets the next step distinguish "reply to the sender" from "mail the address the
+        sender's message asked me to mail".
+        """
+        # index the STRUCTURED response — the shape is the signal, so do this before
+        # flattening anything to a string
+        payload = tool_response
+        if isinstance(tool_response, dict):
+            inner = tool_response.get("content") or tool_response.get("output") or tool_response.get("stdout")
+            payload = tool_response if inner is None else inner
+        try:
+            rows = provenance.index_response(payload)
+        except Exception:  # indexing is best-effort; never break a tool call over it
+            rows = []
+        if rows:
+            self.store.add_provenance(tool_name, rows)
+
         content = ""
         if isinstance(tool_response, dict):
             content = str(tool_response.get("content") or tool_response.get("output") or tool_response.get("stdout") or "")
         elif tool_response:
             content = str(tool_response)
         if content:
-            self.store.add_quarantine(tool_name, content[:2000])
-            self.audit.event("quarantined", tool=tool_name, bytes=len(content))
+            self.store.add_quarantine(tool_name, content[:8000])
+            self.audit.event(
+                "quarantined", tool=tool_name, bytes=len(content),
+                indexed=len(rows), embedded=sum(1 for r in rows if r["origin"] == provenance.CONTENT),
+            )
 
     def commit_batch(self) -> CommitResult:
         return CommitResult(ok=True)

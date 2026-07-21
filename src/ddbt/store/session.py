@@ -47,6 +47,17 @@ class SessionStore:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 ts REAL NOT NULL, tool TEXT, content TEXT NOT NULL
             );
+            -- Every identifier seen in a tool result, and WHERE IT SAT in that result.
+            -- origin='field'   the producing system chose it (a `from` address, a path)
+            -- origin='content' it was embedded in free text, so its author chose it
+            -- See core/provenance.py. This replaces scanning the last few quarantine rows
+            -- for substrings: it is a lookup, so it does not degrade over a long session.
+            CREATE TABLE IF NOT EXISTS provenance (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts REAL NOT NULL, value TEXT NOT NULL, kind TEXT NOT NULL,
+                tool TEXT NOT NULL, path TEXT NOT NULL, origin TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_prov_value ON provenance(value);
             """
         )
 
@@ -121,6 +132,41 @@ class SessionStore:
             "INSERT INTO quarantine(ts,tool,content) VALUES(?,?,?)", (time.time(), tool, content)
         )
         return int(cur.lastrowid)
+
+    # ---- provenance: which values came from where ----
+
+    def add_provenance(self, tool: str, rows: list[dict]) -> None:
+        if not rows:
+            return
+        now = time.time()
+        self._conn.executemany(
+            "INSERT INTO provenance(ts,value,kind,tool,path,origin) VALUES(?,?,?,?,?,?)",
+            [(now, r["value"].lower(), r["kind"], tool, r["path"], r["origin"]) for r in rows],
+        )
+
+    def lookup_provenance(self, value: str) -> list[dict]:
+        """Every recorded sighting of `value`, newest first. Exact (lowercased) match."""
+        rows = self._conn.execute(
+            "SELECT value,kind,tool,path,origin FROM provenance WHERE value=? ORDER BY id DESC",
+            (value.strip().lower(),),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def quarantine_matching(self, values: list[str], limit: int = 3) -> list[str]:
+        """Quarantined outputs that actually MENTION one of `values`, newest first.
+
+        Retrieval by relevance rather than by recency: the last-N window meant an injection
+        ingested a few steps earlier became invisible, so an attacker only had to wait.
+        """
+        if not values:
+            return []
+        clauses = " OR ".join(["content LIKE ?"] * len(values))
+        params = [f"%{v}%" for v in values] + [limit]
+        rows = self._conn.execute(
+            f"SELECT tool, content FROM quarantine WHERE {clauses} ORDER BY id DESC LIMIT ?",
+            params,
+        ).fetchall()
+        return [f"[{r['tool']}] {r['content']}" for r in rows]
 
     def recent_quarantine(self, n: int = 3) -> list[str]:
         rows = self._conn.execute(
