@@ -47,11 +47,9 @@ class SessionStore:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 ts REAL NOT NULL, tool TEXT, content TEXT NOT NULL
             );
-            -- Every identifier seen in a tool result, and WHERE IT SAT in that result.
-            -- origin='field'   the producing system chose it (a `from` address, a path)
-            -- origin='content' it was embedded in free text, so its author chose it
-            -- See core/provenance.py. This replaces scanning the last few quarantine rows
-            -- for substrings: it is a lookup, so it does not degrade over a long session.
+            -- Every identifier seen in a tool result and WHERE IT SAT (see core/provenance.py):
+            -- origin='field' → the producing system chose it; origin='content' → free text, its
+            -- author chose it. A lookup, so it doesn't degrade over a long session.
             CREATE TABLE IF NOT EXISTS provenance (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 ts REAL NOT NULL, value TEXT NOT NULL, kind TEXT NOT NULL,
@@ -75,13 +73,9 @@ class SessionStore:
 
     # ---- atomic counters ----
     #
-    # Claude Code runs hooks as PARALLEL SUBPROCESSES, so two PreToolUse hooks can update the
-    # same session concurrently. A read-modify-write in Python (get_meta → compute → set_meta)
-    # loses increments under that interleaving: both read 4, both write 5, and one step's
-    # suspicion silently vanishes. WAL protects the file from corruption; it does nothing about
-    # a lost update. These do the arithmetic INSIDE a single SQL statement, which SQLite
-    # executes atomically, so concurrent hooks can only ever over-count — never under-count.
-    # Under-counting is the unsafe direction: it means a session looks cleaner than it is.
+    # Hooks run as parallel subprocesses, so a Python read-modify-write would lose increments
+    # (both read 4, both write 5). These do the arithmetic inside one SQL statement (atomic), so
+    # concurrent hooks can only over-count — never under-count, which is the unsafe direction.
 
     def increment_meta(self, key: str, delta: int) -> int:
         """Atomically add `delta` to an integer-valued meta key. Returns the new value."""
@@ -94,11 +88,8 @@ class SessionStore:
         return int(row["value"])
 
     def raise_meta_floor(self, key: str, value: int) -> int:
-        """Atomically raise an integer-valued meta key to at least `value` (never lowers).
-
-        This is the ratchet's core guarantee expressed in SQL rather than in Python: a
-        concurrent hook cannot read a stale floor and write it back, undoing a tightening.
-        """
+        """Atomically raise an integer meta key to at least `value`, never lowering it — the
+        ratchet in SQL, so a concurrent hook can't read a stale floor and undo a tightening."""
         row = self._conn.execute(
             "INSERT INTO meta(key,value) VALUES(?,?) "
             "ON CONFLICT(key) DO UPDATE SET value=CAST(MAX(CAST(meta.value AS INTEGER),?) AS TEXT) "
@@ -153,11 +144,8 @@ class SessionStore:
         return [dict(r) for r in rows]
 
     def quarantine_matching(self, values: list[str], limit: int = 3) -> list[str]:
-        """Quarantined outputs that actually MENTION one of `values`, newest first.
-
-        Retrieval by relevance rather than by recency: the last-N window meant an injection
-        ingested a few steps earlier became invisible, so an attacker only had to wait.
-        """
+        """Quarantined outputs that actually MENTION one of `values`, newest first — retrieval by
+        relevance, not recency, so an injection ingested steps ago can't fall out of the window."""
         if not values:
             return []
         clauses = " OR ".join(["content LIKE ?"] * len(values))

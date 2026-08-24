@@ -1,20 +1,14 @@
 """Capability ticket — the agent's OWN scoped credentials, enforced by CODE, not the judge.
 
-The agent acts on your behalf but does NOT get your account. It gets a *grant*: which tools
-it may call, which destinations it may reach, which paths are off-limits, how many high-impact
-actions it may take, and for how long. Every check here is deterministic — a stranger who has
-talked the agent into anything still cannot make it exceed the ticket, because the ticket is
-policy + arithmetic, not an LLM reading text (SAGA, arXiv:2504.21034 — "move the security
-decision off the LLM where you can"; doc/saga.md, best-pieces #1–#3).
+The agent acts on your behalf but does NOT get your account. A user-authored grant bounds which
+tools it may call, which destinations it may reach, which paths are off-limits, how many
+high-impact actions, and for how long. Every check is deterministic policy + arithmetic — a
+stranger who talked the agent into anything still can't exceed the ticket (SAGA, arXiv:2504.21034).
 
 Three outcomes, all before the judge runs:
-  DENY   — out of scope (tool not granted, destination not allowed, secret path, quota spent,
-           expired). No model call. This is the hard floor.
-  ALLOW  — provably safe and in scope (a read, no egress). No model call. This is the fast path.
-  DEFER  — in scope but consequential. Hand to the step-judge for the semantic call.
-
-The grant is authored by the USER (or operator), never inferred from a prompt the attacker can
-touch — a permissive ticket is not something the agent can request its way into.
+  DENY  — out of scope (tool/destination/path/quota/expiry). The hard floor. No model call.
+  ALLOW — provably safe and in scope (a read, no egress). The fast path. No model call.
+  DEFER — in scope but consequential → hand to the step-judge.
 """
 
 from __future__ import annotations
@@ -165,11 +159,9 @@ def _url_hosts(strings: list[str]) -> list[str]:
 
 
 def _first_path_hit(strings: list[str], deny_paths: list[str]) -> str | None:
-    """Return the offending path token if any arg trips a deny rule, else None.
-
-    Matches two ways so it catches both a bare path argument and a path buried inside a shell
-    command: fnmatch on whitespace/@-split tokens, and a substring test on the rule's core
-    (e.g. '~/.ssh/*' → '.ssh', '**/id_rsa*' → 'id_rsa')."""
+    """The offending path token if any arg trips a deny rule, else None. Matches two ways — to
+    catch a bare path arg and a path buried in a shell command: fnmatch on split tokens, plus a
+    substring test on the rule's core ('~/.ssh/*' → '.ssh', '**/id_rsa*' → 'id_rsa')."""
     for raw in strings:
         low = raw.lower()
         tokens = re.split(r"[\s@='\"]+", raw)

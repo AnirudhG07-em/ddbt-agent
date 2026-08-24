@@ -273,7 +273,7 @@ exactly like any built-in tool — no MCP-specific allowlist needed. Boundary 0 
 
 **Not working:**
 
-1. `src/ddbt/adapters/mcp/__init__.py` is an **empty file**. There is no MCP-specific code.
+1. There is **no MCP-specific adapter**. MCP works only because Claude Code routes `mcp__*` calls through the same PreToolUse hook as every other tool.
 2. `bootstrap._scan_mcp()` looks for tool descriptions inside `.mcp.json` — but real
    `.mcp.json` files only hold `{command, args, env}`. Descriptions come from the running
    server at runtime. **So on a real project that scan never runs.**

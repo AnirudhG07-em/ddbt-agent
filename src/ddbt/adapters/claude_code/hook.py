@@ -1,17 +1,10 @@
 """Claude Code hook adapter — the primary enforcement surface (doc §5, §7).
 
-Each Claude Code hook fires a fresh subprocess with an event JSON on stdin. This
-module translates that JSON into :class:`Engine` calls and emits the hook's response
-JSON on stdout. The engine (keyed by ``session_id``) holds all state on disk, so the
-stateless subprocess model is fine.
-
-Mapping (PreToolUse):
-  Effect.ALLOW → exit 0, no decision   (respect the user's normal permission flow)
-  Effect.ASK   → permissionDecision "ask"
-  Effect.DENY  → permissionDecision "deny" + reason  (the agent sees why)
-
-Fail-safe: if the sandbox itself errors on a PreToolUse, we emit "ask" (neither a
-silent allow nor a hard block) so a bug never silently disables enforcement.
+Each hook fires a fresh subprocess with event JSON on stdin; this module translates it into
+:class:`Engine` calls (state lives on disk, keyed by session_id, so statelessness is fine) and
+prints the response JSON on stdout. PreToolUse maps ALLOW→exit 0 (respect the user's normal
+permission flow), ASK→"ask", DENY→"deny"+reason. Fail-safe: a sandbox error on PreToolUse emits
+"ask", so a bug never silently disables enforcement.
 """
 
 from __future__ import annotations
@@ -27,12 +20,20 @@ from ddbt.core.engine import Effect, Engine
 
 
 def _load_grant(cwd: str):
-    """The agent's capability ticket, if the user authored one. Looked up at
-    ``<project>/.ddbt/grant.json`` first, then ``~/.ddbt/grant.json``. Absent → no ticket
-    (the judge alone bounds the agent, exactly as before this file learned about grants)."""
+    """The agent's capability ticket. From ddbt.json's "grant" (an inline object or a path),
+    else <project>/.ddbt/grant.json, then ~/.ddbt/grant.json. Absent → no ticket."""
+    from ddbt.core import config
     from ddbt.core.grant import Grant
 
-    for p in (Path(cwd) / ".ddbt" / "grant.json", Path.home() / ".ddbt" / "grant.json"):
+    spec = config.grant_spec(cwd)
+    if isinstance(spec, dict):
+        try:
+            return Grant.from_dict(spec, now=time.time())
+        except (TypeError, ValueError, KeyError):
+            return None
+    candidates = [Path(cwd) / spec] if isinstance(spec, str) and spec.strip() else []
+    candidates += [Path(cwd) / ".ddbt" / "grant.json", Path.home() / ".ddbt" / "grant.json"]
+    for p in candidates:
         try:
             if p.is_file():
                 return Grant.from_dict(json.loads(p.read_text()), now=time.time())
@@ -42,19 +43,16 @@ def _load_grant(cwd: str):
 
 
 def _engine(payload: dict) -> Engine:
-    """Build the engine for a hook invocation. The v4 decider is the LLM step-judge, so a
-    provider key is required; the judge fails CLOSED (deny) without one — that's the
-    judge-centric design (strict). Model overridable via DDBT_JUDGE_MODEL. A capability
-    ticket from .ddbt/grant.json, if present, is enforced deterministically before the judge."""
-    session_id = payload.get("session_id", "default")
-    cwd = payload.get("cwd") or "."
+    """Build the engine for a hook invocation. The decider is the LLM step-judge (fails closed
+    without a provider key); a ticket, if present, is enforced before it. Provider/model and the
+    ddbd / gate_offgoal / error_effect axes all come from ddbt.json (see core/config.py)."""
+    from ddbt.core import config
     from ddbt.judge.provider import make_step_judge
 
-    judge = make_step_judge()
-    # gate_offgoal=True: interactive use should GATE a benign off-goal step (ask the human),
-    # not brick the task with a hard deny. Injection-linked deviation still hard-denies.
-    return Engine(session_id, workspace_root=cwd, step_judge=judge, grant=_load_grant(cwd),
-                  gate_offgoal=True)
+    session_id = payload.get("session_id", "default")
+    cwd = payload.get("cwd") or "."
+    return Engine(session_id, workspace_root=cwd, step_judge=make_step_judge(),
+                  grant=_load_grant(cwd), **config.engine_kwargs(cwd))
 
 
 # ---- attribution: make it unmistakable that DDBT (not Claude) made this call, and which layer ----
@@ -66,9 +64,8 @@ def _layer(checkpoint: str) -> str:
 
 
 def _reason(d, heat: str | None = None) -> str:
-    """One line Claude Code shows verbatim — carries the 🛡 DDBT marker, the layer that decided
-    (ticket vs judge), the chromatic risk band, the session heat, and the human reason. This is
-    how a user tells a DDBT block apart from Claude declining on its own."""
+    """The line Claude Code shows verbatim: 🛡 DDBT marker + deciding layer + risk band + heat +
+    reason. This is how a user tells a DDBT block apart from Claude declining on its own."""
     heat_bit = f" · heat:{heat}" if heat else ""
     return (f"🛡 DDBT · {d.state.upper()} · via {_layer(d.checkpoint)} "
             f"[{d.checkpoint}] {_SWATCH.get(d.risk, '')} risk:{d.risk}{heat_bit} — {d.reason}")
@@ -89,7 +86,6 @@ def _context_output(event: str, context: str) -> dict:
 
 
 def handle_pretooluse(payload: dict) -> dict:
-    session_id = payload.get("session_id", "default")
     cwd = payload.get("cwd") or "."
     tool_name = payload.get("tool_name", "")
     tool_input = payload.get("tool_input", {}) or {}
@@ -105,25 +101,21 @@ def handle_pretooluse(payload: dict) -> dict:
         return _pre_output("deny", _reason(decision, heat))
     if decision.effect == Effect.ASK:
         return _pre_output("ask", _reason(decision, heat))
-    # ALLOW → stay out of the user's normal permission flow (exit 0, no decision). With
-    # DDBT_VERBOSE set, still narrate the approval so you can SEE ddbt clearing the greens —
-    # it's how you know ddbt is live and that a passed step was ddbt-approved, not unseen.
+    # ALLOW → stay out of the user's normal permission flow (exit 0). DDBT_VERBOSE narrates the
+    # approval anyway, so you can see ddbt clearing the greens and know it's live.
     if os.environ.get("DDBT_VERBOSE"):
         print(_reason(decision, heat), file=sys.stderr)
     return {}
 
 
 def handle_posttooluse(payload: dict) -> dict:
-    session_id = payload.get("session_id", "default")
     cwd = payload.get("cwd") or "."
     tool_name = payload.get("tool_name", "")
     tool_input = payload.get("tool_input", {}) or {}
     eng = _engine(payload)
     try:
-        # the tool RAN → quarantine its output (untrusted-by-default) so the judge can
-        # inspect later steps for injected/stray behaviour. v4 has no envelope to "widen":
-        # a gated (ASK) action that ran was human-approved, and that's recorded by the
-        # PreToolUse decision already; nothing more to confirm here.
+        # the tool ran → quarantine its output (untrusted-by-default) so the judge can inspect
+        # later steps for injected/stray behaviour.
         eng.record_result(tool_name, tool_input, payload.get("tool_response", {}) or {}, cwd=cwd)
     finally:
         eng.close()
@@ -131,7 +123,6 @@ def handle_posttooluse(payload: dict) -> dict:
 
 
 def handle_sessionstart(payload: dict) -> dict:
-    session_id = payload.get("session_id", "default")
     cwd = payload.get("cwd") or "."
     source = payload.get("source", "startup")
     eng = _engine(payload)
@@ -148,8 +139,6 @@ def handle_sessionstart(payload: dict) -> dict:
 
 
 def handle_userpromptsubmit(payload: dict) -> dict:
-    session_id = payload.get("session_id", "default")
-    cwd = payload.get("cwd") or "."
     eng = _engine(payload)
     try:
         context = eng.on_user_prompt(payload.get("prompt", "") or "")
@@ -159,12 +148,8 @@ def handle_userpromptsubmit(payload: dict) -> dict:
 
 
 def handle_configchange(payload: dict) -> dict:
-    """Continuous Boundary 0: re-verify config integrity when it changes mid-session.
-
-    A HOLD here blocks the change with exit 2 (the documented ConfigChange block path)
-    so a hook-injection / base-URL-redirect tamper can't take effect.
-    """
-    session_id = payload.get("session_id", "default")
+    """Continuous Boundary 0: re-verify config integrity on change. A HOLD blocks the change with
+    exit 2 so a hook-injection / base-URL-redirect tamper can't take effect mid-session."""
     cwd = payload.get("cwd") or "."
     eng = _engine(payload)
     try:
@@ -177,8 +162,6 @@ def handle_configchange(payload: dict) -> dict:
 
 
 def handle_stop(payload: dict) -> dict:
-    session_id = payload.get("session_id", "default")
-    cwd = payload.get("cwd") or "."
     eng = _engine(payload)
     try:
         result = eng.commit_batch()

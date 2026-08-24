@@ -122,26 +122,18 @@ def _summarize(tool: str, tool_input: dict) -> str:
 class Engine:
     def __init__(self, session_id, workspace_root, base_dir=None, step_judge=None, ddbd=True,
                  error_effect="ask", grant=None, gate_offgoal=False, **_legacy):
-        # ddbd=True enables AXIS 2 (the "Don't Do Bad Things" ethics/harm layer). Axis 1
-        # (goal-fidelity / anti-injection) is ALWAYS on. Benchmarks measuring operational
-        # safety (e.g. R-Judge) set ddbd=False to isolate axis 1.
         self.session_id = session_id
         self.workspace_root = workspace_root
-        self.ddbd = ddbd
-        # what a JUDGE INFRA FAILURE maps to — "ask" (a human decides) for interactive use,
-        # "deny" for benchmarks that want to measure strict fail-closed behaviour.
+        self.ddbd = ddbd  # axis 2 (harm/ethics). Axis 1 (goal-fidelity) is always on. Benchmarks isolating axis 1 set False.
+        # judge infra failure → ask (human decides) interactively, or deny (fail-closed) for benchmarks.
         self.error_effect = Effect.DENY if str(error_effect).lower() == "deny" else Effect.ASK
         self.store = SessionStore(session_id, base_dir=base_dir)
         self.audit = AuditLogger(self.store)
         self.step_judge = step_judge or make_step_judge()
-        # the agent's OWN scoped credentials (a capability ticket). Optional: None = the agent
-        # has whatever the harness gives it, and only the judge bounds it. When set, the grant
-        # is a deterministic floor checked BEFORE the judge — un-foolable by injection.
+        # the agent's own capability ticket: a deterministic floor checked BEFORE the judge (un-foolable by injection). None = judge-only.
         self.grant = grant
-        # when True, a benign OFF-GOAL step (clean provenance, no exfil) gates for a human
-        # instead of hard-denying — legitimate initiative shouldn't brick the task. Injection-
-        # linked deviation still hard-denies. OFF in benchmarks (preserves measured deny
-        # behaviour); ON in interactive use (the hook), where bricking is worse than asking.
+        # True → benign off-goal steps (clean provenance, no exfil) gate for a human instead of hard-denying.
+        # Injection-linked deviation still hard-denies. On in the hook; off in benchmarks (preserves measured behaviour).
         self.gate_offgoal = gate_offgoal
         self.goal = self.store.get_meta("goal", "") or ""
 
@@ -178,21 +170,18 @@ class Engine:
             aid = self.audit.decision(checkpoint="noop", state="allow", tool=tool_name, summary="no system effect", reason="pure tool")
             return Decision(Effect.ALLOW, "allow", "noop", "pure tool, no system effect", audit_id=aid)
 
-        # provenance labels — computed once and reused for the chromatic "who" AND the judge facts
+        # provenance labels — computed once, reused for the chromatic "who" and the judge facts
         labels = self._labels(tool_input)
         who = _who(labels)
 
-        # THE HARD FLOOR: the agent's own capability ticket, checked deterministically BEFORE the
-        # judge. A stranger who has talked the agent into anything still cannot exceed this — it
-        # is policy + arithmetic, not an LLM reading text. It also carries the fast path: a safe
-        # in-scope read is allowed here with no model call at all.
+        # HARD FLOOR: the capability ticket, checked deterministically before the judge — policy +
+        # arithmetic, not an LLM reading text, so injection can't talk past it. Also the fast path:
+        # an in-scope read is allowed here with no model call.
         gcheck = None
         if self.grant is not None:
             gcheck = self.grant.check(tool_name, tool_input, now=time.time(), used=self._grant_used())
             if gcheck.effect == "deny":
-                # a hard-floor breach is strong evidence the session is being probed — tighten it,
-                # atomically (concurrent hooks can't lose the increment). Same monotonic ratchet the
-                # judge feeds; only a human `ddbt clear` brings it back down.
+                # a floor breach means the session is being probed — ratchet suspicion (atomic).
                 self.store.increment_meta("suspicion", 3)
                 aid = self.audit.decision(checkpoint="out-of-scope", state="deny", tool=tool_name,
                                           summary=_summarize(tool_name, tool_input), reason=gcheck.reason,
@@ -209,9 +198,8 @@ class Engine:
                                 audit_id=aid)
             # gcheck.effect == "defer" → in scope but consequential; fall through to the judge
 
-        # show the judge the quarantined output that MENTIONS this step's arguments, not
-        # merely the most recent — otherwise an injection ingested a few steps ago drops out
-        # of the window and an attacker only has to wait before acting on it.
+        # show the judge the quarantined output that MENTIONS this step's arguments (not merely the
+        # most recent) — else an injection ingested steps ago drops out of the window before it acts.
         values = [v for v, is_id in self._consequential_values(tool_input) if is_id]
         evidence = self.store.quarantine_matching(values, limit=2) or self.store.recent_quarantine(2)
 
@@ -230,9 +218,8 @@ class Engine:
             # this step's evidence tightens FUTURE steps (see _bump_suspicion)
             self._bump_suspicion(verdict, blocked=effect is Effect.DENY)
 
-        # a consequential call that is going ahead spends one unit of its grant quota (monotonic,
-        # atomic — SAGA's OTK counter analog). ASK counts too: a gated action that a human approves
-        # still consumes the budget, and we debit at decision time so a spent ticket denies next.
+        # a call going ahead spends one unit of grant quota (atomic). ASK counts too — debit at
+        # decision time so a spent ticket denies the next step.
         if gcheck is not None and gcheck.quota_key and effect in (Effect.ALLOW, Effect.ASK):
             self.store.increment_meta(f"grant_used:{gcheck.quota_key}", 1)
 
@@ -257,40 +244,29 @@ class Engine:
         )
 
     def _combine(self, verdict, strictness: int = 0, who: str = "you") -> tuple[Effect, str]:
-        """Combine the checklist into a decision. Axis 1 (deviation) hard-denies when it is
-        injection-linked; axis 2 (harm) denies when ddbd is on; then adaptive strictness — a
-        session that has shown malicious signals (high suspicion) progressively tightens."""
+        """Checklist → decision. Axis 1 (deviation) hard-denies injection-linked steps; axis 2
+        (harm) denies when ddbd is on; then adaptive strictness tightens a suspicious session."""
         if verdict.error:
-            # An infra failure (rate limit, timeout, dead key) is NOT a security finding.
-            # Hard-denying it means a 429 blocks a tool call in your editor, which makes the
-            # sandbox undeployable — and it disagrees with hook.py, which already emits "ask"
-            # when the sandbox itself crashes. ASK keeps a human in the loop without pretending
-            # we judged anything. Benchmarks set error_effect="deny" to measure fail-closed.
+            # infra failure (429, timeout, dead key) is not a security finding — ask a human,
+            # don't hard-deny (that would brick a tool call in your editor). Benchmarks set "deny".
             return self.error_effect, "judge-error"
         if verdict.deviation:
-            # Anti-injection is non-negotiable: an off-goal step that looks injection-driven
-            # (a stranger chose a value, the judge suspected injection, or it exfiltrates) is a
-            # hard DENY. But a benign off-goal step the agent took on its OWN initiative — clean
-            # provenance, no exfil — shouldn't brick the task. With gate_offgoal on, that gates
-            # for a human instead. Keying on provenance keeps real injections hard-denied.
+            # Off-goal + injection-linked (stranger/unknown provenance, suspected injection, or
+            # exfil) is a hard DENY. A benign off-goal step on the agent's own initiative gates
+            # for a human when gate_offgoal is on. Keying on provenance keeps real injections denied.
             injection_linked = (verdict.injection_suspected or verdict.external_exfil
                                 or who in ("stranger", "unknown"))
             if self.gate_offgoal and not injection_linked:
                 return Effect.ASK, "off-goal-gate"
-            return Effect.DENY, "goal-fidelity"  # axis 1 — anti-injection
+            return Effect.DENY, "goal-fidelity"  # axis 1
         if self.ddbd and verdict.harmful:
             return Effect.DENY, "ethics"  # axis 2 — only when ddbd enabled
         soft = verdict.requests_secrecy or verdict.side_task or verdict.injection_suspected
-        if strictness >= 2:  # LOCKED — the session looks genuinely compromised
+        if strictness >= 2:  # LOCKED — session looks compromised; only basic work passes
             if verdict.high_impact or soft:
                 return Effect.DENY, "locked"
             return Effect.ALLOW, "judge"
-        if strictness == 1:
-            # ELEVATED tightens the gates but must NOT remove the human. Escalating
-            # high_impact to a hard DENY here meant one earlier flag could brick the rest of a
-            # long session: a legitimate on-goal action ("share the folder with HR") was denied
-            # outright with no way to approve it. Gating keeps a person in the loop; only
-            # LOCKED — which now takes sustained evidence — refuses outright.
+        if strictness == 1:  # ELEVATED — tighten, but keep a human in the loop (gate, don't deny)
             if verdict.high_impact or soft:
                 return Effect.ASK, "elevated-gate"
             return Effect.ALLOW, "judge"
@@ -303,10 +279,8 @@ class Engine:
 
     _SUSPICION_WEIGHTS = {"harmful": 3, "deviation": 2, "requests_secrecy": 2,
                           "injection_suspected": 2, "external_exfil": 1, "side_task": 1}
-    # A single soft flag on a step we ALLOWED is not evidence of an attack — it is the judge
-    # noticing something. Only accrue when the step was actually blocked, or when several
-    # signals corroborate each other. Before this, one deviation (2) plus one side_task (1)
-    # reached ELEVATED, so a single false positive could tighten a whole session.
+    # accrue suspicion only from a blocked step, or when ≥2 signals corroborate — one soft flag on
+    # an allowed step is the judge noticing, not proof, and treating it as proof brought false positives.
     _MIN_CORROBORATING_SIGNALS = 2
 
     def _grant_used(self) -> dict:
@@ -319,24 +293,15 @@ class Engine:
         return int(self.store.get_meta("suspicion", "0") or "0")
 
     def _strictness(self) -> int:
+        # ELEVATED ≈ two blocked deviations, LOCKED ≈ four (sized against the weights above).
         s = self._suspicion()
-        # Thresholds sized against the weights above: ELEVATED needs roughly two blocked
-        # deviations, LOCKED roughly four. A long, honest task drifts past 3 far too easily.
         computed = 0 if s < 6 else (1 if s < 12 else 2)
-        # RATCHET: strictness only ever rises. Once a session has tightened, a continuation
-        # ("continue with operation") or any future suspicion-decay can never lower the guard.
-        # Done as one atomic SQL max() — hooks run as parallel subprocesses, and a Python-side
-        # read-max-write would let a stale reader undo another hook's tightening.
+        # RATCHET: strictness only rises. No continuation or decay lowers it — only `ddbt clear`.
+        # Atomic SQL max() because hooks run as parallel subprocesses.
         return self.store.raise_meta_floor("strictness_floor", computed)
 
     def _bump_suspicion(self, verdict, blocked: bool) -> None:
-        """Accrue suspicion only from evidence, not from every observation.
-
-        `blocked` means this step was actually refused — the strongest evidence available.
-        Otherwise we require several signals to agree: one flag on a step we went on to allow
-        is the judge noticing something, not proof of an attack, and treating it as proof is
-        what let a single false positive tighten an entire session.
-        """
+        """Accrue suspicion from evidence only: a blocked step, or ≥2 corroborating signals."""
         fired = [sig for sig in self._SUSPICION_WEIGHTS if getattr(verdict, sig, False)]
         if not fired:
             return
@@ -346,13 +311,8 @@ class Engine:
         self.store.increment_meta("suspicion", w)  # atomic: concurrent hooks can't lose it
 
     def clear_suspicion(self, reason: str) -> int:
-        """Explicit, audited human clearance — the ONLY way the guard comes down.
-
-        The ratchet never lowers on its own: no decay, no "continue" reset, nothing an
-        attacker can trigger. But a session that tightened on a false positive must have some
-        way back, or the answer to a bad judgement is "restart and lose your context". The
-        user is the trusted principal, so let them say so — on the record.
-        """
+        """Audited human clearance — the only way the guard comes down (the trusted user says so,
+        on the record). Nothing an attacker can trigger; the alternative to this is losing context."""
         before = self._suspicion()
         self.store.set_meta("suspicion", "0")
         self.store.set_meta("strictness_floor", "0")
@@ -360,19 +320,15 @@ class Engine:
         return before
 
     def _labels(self, tool_input: dict) -> list[str]:
-        """Where did each argument come from? — the decisive anti-injection signal.
+        """Where did each argument come from? — the decisive anti-injection signal. Not "did this
+        value appear in output" (legitimate values do) but "could an attacker have chosen it?":
 
-        The question is NOT "did this value appear in tool output" (almost every legitimate
-        value does — read-then-act is the normal pattern) but "could an attacker have chosen
-        it?". That is answered structurally by core/provenance.py and looked up here:
+          user-named        appears in the trusted goal
+          grounded          was a FIELD in a tool result — the producing system chose it
+          injection-derived appears only inside free text — its author chose it
+          unknown           never seen before this step
 
-          user-named       it appears in the trusted goal
-          grounded         it was a FIELD in some tool result — the producing system chose it
-          injection-derived it appears only INSIDE free text, so its author chose it
-          unknown          never seen before this step
-
-        No wordlists, no model, and no recency window — a lookup, so it does not decay over
-        a long session.
+        A structural lookup (core/provenance.py) — no wordlists, no model, no decay.
         """
         labels: list[str] = []
         n = self.store.quarantine_count()
@@ -387,9 +343,7 @@ class Engine:
                 continue
             sightings = self.store.lookup_provenance(v)
             if not sightings:
-                # Only worth saying for a DESTINATION. Prose arguments (a subject line, a
-                # message body) have nowhere to land, so "unknown origin" on them is noise
-                # that buries the one label that matters.
+                # only worth saying for a destination; "unknown origin" on prose (a subject, a body) is noise.
                 if is_identifier:
                     labels.append(
                         f"arg {val[:60]!r} is a destination that appears neither in the goal "
@@ -411,12 +365,8 @@ class Engine:
         return labels
 
     def _consequential_values(self, tool_input: dict) -> list[tuple[str, bool]]:
-        """This step's argument values, as (value, is_identifier).
-
-        Identifiers — addresses, URLs, paths, handles — decide where an effect LANDS, which
-        is what provenance is for. Other short values are still looked up (so a filename the
-        user named gets credit) but are not reported when nothing is known about them.
-        """
+        """Argument values as (value, is_identifier). Identifiers (addresses, URLs, paths, handles)
+        decide where an effect lands. Other short values are looked up but not reported when unknown."""
         out: list[tuple[str, bool]] = []
         seen: set[str] = set()
         for val in _string_values(tool_input):
@@ -432,22 +382,16 @@ class Engine:
         return out
 
     def _history(self, n: int = 6) -> list[str]:
-        """Recent prior steps this session (trajectory context for the judge): what the
-        agent has already done, so the judge can tell a consistent continuation from a drift."""
+        """Recent prior steps — trajectory context so the judge can tell a continuation from a drift."""
         decisions = [e for e in self.audit.trail() if e.get("kind") == "decision"]
         return [f"{e.get('tool','')} {e.get('summary','')} → {e.get('state','')}" for e in decisions[-n:]]
 
     def record_result(self, tool_name: str, tool_input: dict, tool_response: dict, cwd: str | None = None) -> None:
-        """Take in what a step returned: quarantine the text, and index where its values sat.
-
-        Both halves matter. The quarantine keeps the raw content so a later step can be shown
-        the evidence; the provenance index records, for every identifier in the result,
-        whether it was a structured FIELD or was embedded in free text. That index is what
-        lets the next step distinguish "reply to the sender" from "mail the address the
-        sender's message asked me to mail".
-        """
-        # index the STRUCTURED response — the shape is the signal, so do this before
-        # flattening anything to a string
+        """Quarantine a step's returned text and index where its values sat. The quarantine keeps
+        raw content as later evidence; the provenance index records, per identifier, whether it was
+        a structured FIELD or embedded in free text — what lets the next step tell "reply to the
+        sender" from "mail the address the sender's message told me to mail"."""
+        # index the STRUCTURED response first — the shape is the signal, so index before flattening
         payload = tool_response
         if isinstance(tool_response, dict):
             inner = tool_response.get("content") or tool_response.get("output") or tool_response.get("stdout")

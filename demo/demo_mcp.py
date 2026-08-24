@@ -359,9 +359,9 @@ def act_5_audit(judge, case: dict) -> None:
 def act_6_gaps() -> None:
     act("6", "Honest gap report — what is NOT built for MCP yet")
     gaps = [
-        ("The MCP adapter is an empty file.",
-         "src/ddbt/adapters/mcp/__init__.py is 0 bytes. MCP works today only because Claude "
-         "Code routes mcp__server__tool calls through the same hook as everything else."),
+        ("There is no dedicated MCP adapter.",
+         "MCP works today only because Claude Code routes mcp__server__tool calls through the "
+         "same PreToolUse hook as every other tool — there is no MCP-specific integration."),
         ("Startup never sees a real server's descriptions.",
          "A real .mcp.json holds only {command, args, env}. Descriptions live on the live "
          "server and arrive at runtime via tools/list — so on a real project the scan loop "

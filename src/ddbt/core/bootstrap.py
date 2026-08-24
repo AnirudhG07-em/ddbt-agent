@@ -1,22 +1,15 @@
 """Boundary 0 — bootstrap integrity verifier (doc §2).
 
-Runs before the agent loop (and, as a bonus over the doc, on ``ConfigChange`` /
-``FileChanged`` for continuous verification). Catches supply-chain / config attacks
-that happen *before* any runtime checkpoint can see them. The hot path is zero-LLM —
-pure hashing; the only optional LLM call is the hash-gated semantic description scan.
+Runs before the agent loop (and on ConfigChange/FileChanged for continuous verification) to catch
+supply-chain / config attacks that land before any runtime checkpoint can see them. Hot path is
+zero-LLM (pure hashing); the only optional LLM call is the hash-gated semantic scan. Three checks:
 
-Three checks:
-  1. Config integrity — hash guarded config (``.claude/settings.json``, ``.mcp.json``,
-     hooks); baselines stored OUTSIDE the project (the agent can't write them). Drift
-     or first-sight of config that sets network endpoints / lifecycle shell → HOLD.
-  2. MCP manifest hash — hash each MCP server entry + its full tool-description JSON;
-     drift → HOLD (kills rug-pull / cross-session tool poisoning).
-  3. Tool-description scan — TWO layers, no keyword/phrase matching:
-       (a) mechanical obfuscation only (zero-width unicode, base64-encoded text) — the
-           structural signals an LLM can't see; zero-LLM (``scan_text``).
-       (b) hash-gated SEMANTIC poison scan (``semantic_scan``) — an optional LLM
-           classifier ("describe vs instruct") keyed and cached by content hash, so an
-           unchanged description is scanned at most once ever (steady state: 0 LLM).
+  1. Config integrity — hash guarded config; baselines stored outside the project (the agent can't
+     write them). Drift, or first-sight config that sets network/lifecycle-shell keys → HOLD.
+  2. MCP manifest hash — hash each server entry + its tool-description JSON; drift → HOLD.
+  3. Tool-description scan, no keyword matching: (a) mechanical obfuscation only (zero-width
+     unicode, base64 text) — zero-LLM; (b) hash-gated semantic poison scan — an optional LLM
+     classifier cached by content hash, so an unchanged description is scanned at most once.
 """
 
 from __future__ import annotations
@@ -38,10 +31,9 @@ GUARDED_CONFIG = (
     ".claude/hooks.json",
 )
 
-# Phrase/keyword injection patterns were REMOVED (MCPTox: ~2% detection — brittle and
-# trivially reworded). Semantic poison detection is now the (hash-gated) scanner's job.
-# We keep only MECHANICAL OBFUSCATION detectors — the structural signals an LLM can't see:
-# invisible unicode, and base64-encoded text smuggled into a description.
+# Keyword/phrase patterns were removed (MCPTox: ~2% detection, trivially reworded). We keep only
+# MECHANICAL obfuscation detectors — the structural signals an LLM can't see; semantics is the
+# hash-gated scanner's job.
 _ZERO_WIDTH = re.compile(r"[​‌‍⁠﻿]")
 _BASE64_BLOB = re.compile(r"[A-Za-z0-9+/]{24,}={0,2}")
 # config keys that must never auto-load — they redirect network or run shell
@@ -83,10 +75,8 @@ def _hash_file(path: Path) -> str:
 
 
 def scan_text(text: str, where: str) -> list[Finding]:
-    """LLM-free MECHANICAL obfuscation scan only (no keyword/phrase matching — that was
-    removed). Catches the structural signals an LLM is blind to: invisible unicode, and
-    base64 that decodes to a readable message hidden in the text. Semantic poison detection
-    is handled by semantic_scan() with the (hash-gated) description scanner."""
+    """LLM-free mechanical obfuscation scan: the structural signals an LLM is blind to — invisible
+    unicode, and base64 that decodes to a readable hidden message. Semantics is semantic_scan()'s job."""
     findings: list[Finding] = []
     if _ZERO_WIDTH.search(text):
         findings.append(Finding("hold", "obfuscation", f"zero-width characters in {where}"))
@@ -95,8 +85,7 @@ def scan_text(text: str, where: str) -> list[Finding]:
             decoded = base64.b64decode(m.group(0), validate=True).decode("utf-8")
         except (binascii.Error, ValueError, UnicodeDecodeError):
             continue
-        # flag only if it decodes to a readable message (a hidden instruction), not a
-        # random token/hash (which decodes to non-printable bytes) → keeps false positives low
+        # flag only readable decoded text (a hidden instruction), not a random token/hash → low FP
         if len(decoded) >= 12 and sum(c.isprintable() or c.isspace() for c in decoded) / len(decoded) > 0.85:
             findings.append(Finding("hold", "obfuscation", f"base64-encoded text in {where}"))
     return findings
@@ -109,12 +98,9 @@ def _scan_cache_path() -> Path:
 
 def semantic_scan(text: str, where: str, scanner=None) -> list[Finding]:
     """Mechanical obfuscation check, then a HASH-GATED semantic scan of `text` (a tool desc).
-
-    scan_text (zero-width / base64) is the free fast-path; if it fires, no LLM is needed.
-    Otherwise — only when a scanner is supplied — run the model classifier, but key its verdict
-    by content hash and cache it, so identical/unchanged descriptions are never re-scanned
-    (steady state: 0 LLM). The runtime step-judge is the backstop when no scanner is wired.
-    """
+    scan_text is the free fast-path; if it fires, no LLM is needed. Otherwise (only with a scanner)
+    run the model classifier but cache its verdict by content hash, so unchanged descriptions are
+    never re-scanned. The runtime step-judge is the backstop when no scanner is wired."""
     findings = scan_text(text, where)
     if findings or scanner is None or not text.strip():
         return findings
@@ -132,15 +118,15 @@ def semantic_scan(text: str, where: str, scanner=None) -> list[Finding]:
         v = _load(cache[key])
     else:
         v = scanner.scan(text)
-        # NEVER cache an error verdict: it fails closed to poison=True, so caching it would
-        # brand a description as poisoned forever on the strength of one dead API key.
+        # never cache an error verdict — it fails closed, so caching would brand a description
+        # poisoned forever on one dead API key.
         if not v.error:
             cache[key] = _dump(v)
             cache_file.parent.mkdir(parents=True, exist_ok=True)
             cache_file.write_text(json.dumps(cache))
     if v.error:
-        # still a HOLD (fail closed) — but recorded as "could not check", not "found poison",
-        # so the audit trail never claims a detection we did not actually make.
+        # HOLD (fail closed), but recorded as "could not check", not "found poison" — the audit
+        # trail never claims a detection we didn't make.
         findings.append(Finding("hold", "tool_scan_unavailable", f"{v.reason} ({where})"))
     elif v.poison:
         findings.append(Finding("hold", "tool_poisoning_semantic", f"{v.kind}: {v.reason} ({where})"))

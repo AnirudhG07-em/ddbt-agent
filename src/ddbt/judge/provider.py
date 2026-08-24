@@ -5,12 +5,13 @@ Both backends share the same prompts, the same forced-tool-call schema and the s
 fail-closed behaviour, so results are comparable across providers.
 
 Selection order:
-  1. ``DDBT_PROVIDER``      — "anthropic" | "gemini" (explicit wins)
-  2. auto-detect from keys  — GEMINI_API_KEY / GOOGLE_API_KEY → gemini,
+  1. ``DDBT_PROVIDER``      — "anthropic" | "gemini" (explicit env wins)
+  2. ``ddbt.json``          — the project's declared provider (see core/config.py)
+  3. auto-detect from keys  — GEMINI_API_KEY / GOOGLE_API_KEY → gemini,
                               else ANTHROPIC_API_KEY (and no Gemini key) → anthropic
-  3. default                — GEMINI (the project default)
+  4. default                — GEMINI (the project default)
 
-``DDBT_JUDGE_MODEL`` overrides the model id for whichever provider is chosen.
+``DDBT_JUDGE_MODEL`` (or ``DDBT_MODEL``), then ``ddbt.json`` "model", override the model id.
 
     export GEMINI_API_KEY=...                     # → gemini-2.5-flash (default)
     export DDBT_PROVIDER=anthropic                # → claude-haiku-4-5
@@ -70,9 +71,12 @@ def load_env() -> None:
 
 
 def active_provider() -> str:
-    """Resolve the provider name without constructing anything."""
+    """Resolve the provider name without constructing anything. Order: DDBT_PROVIDER env →
+    ddbt.json → key auto-detect → project default (gemini)."""
     load_env()
-    explicit = (os.environ.get("DDBT_PROVIDER") or "").strip().lower()
+    from ddbt.core import config
+
+    explicit = config.provider()  # env DDBT_PROVIDER, else ddbt.json "provider"
     if explicit in ("anthropic", "claude"):
         return "anthropic"
     if explicit in ("gemini", "google"):
@@ -85,8 +89,10 @@ def active_provider() -> str:
 
 
 def default_model(provider: str | None = None) -> str:
+    from ddbt.core import config
+
     provider = provider or active_provider()
-    override = os.environ.get("DDBT_JUDGE_MODEL")
+    override = config.model()  # env DDBT_JUDGE_MODEL/DDBT_MODEL, else ddbt.json "model"
     if override:
         return override
     return GEMINI_DEFAULT if provider == "gemini" else ANTHROPIC_DEFAULT

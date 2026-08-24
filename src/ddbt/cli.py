@@ -1,6 +1,6 @@
 """``ddbt`` command-line interface.
 
-  ddbt install   --project DIR     wire ddbt hooks into .claude/settings.json
+  ddbt install   --project DIR     wire hooks into .claude/settings.json + write ddbt.json defaults
   ddbt uninstall --project DIR     remove them
   ddbt trust     --project DIR     baseline current config (Boundary 0 approval)
   ddbt verify    --project DIR     run Boundary 0 integrity check
@@ -23,9 +23,16 @@ from ddbt.store.session import SessionStore
 
 
 def _cmd_install(args: argparse.Namespace) -> int:
+    from ddbt.core import config
+
     path = installer.install(args.project, intent=args.intent, intent_model=args.intent_model)
+    cfg_path, cfg_written = config.write_default(args.project)  # create defaults if absent, never clobber
     written = bootstrap.trust(args.project)
     print(f"✓ ddbt hooks installed → {path}")
+    if cfg_written:
+        print(f"✓ default config written → {cfg_path}  (edit for provider/model/oauth — see doc/credentials.md)")
+    else:
+        print(f"• {cfg_path} kept (already present)")
     if written:
         print(f"✓ Boundary 0 baseline recorded for: {', '.join(written)}")
     if args.intent:
@@ -179,7 +186,7 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--project", default=os.getcwd(), help="project directory (default: cwd)")
         return sp
 
-    install_p = _proj(sub.add_parser("install", help="install Claude Code hooks"))
+    install_p = _proj(sub.add_parser("install", help="install hooks + write a default ddbt.json"))
     install_p.add_argument("--intent", action="store_true", help="enable the blind intent judge (needs ANTHROPIC_API_KEY)")
     install_p.add_argument("--intent-model", default="claude-haiku-4-5", help="model for the intent judge")
     install_p.set_defaults(fn=_cmd_install)

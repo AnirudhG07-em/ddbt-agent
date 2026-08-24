@@ -1,0 +1,31 @@
+{
+  "provider": null,
+  "model": null,
+  "ddbd": true,
+  "gate_offgoal": true,
+  "error_effect": "ask",
+  "grant": ".ddbt/grant.json",
+  "oauth": {
+    "_status": "SCAFFOLDING — not consumed by ddbt yet. See doc/credentials.md.",
+    "github": {
+      "app_id": "",
+      "installation_id": "",
+      "private_key_path": ".ddbt/github-app.pem",
+      "repositories": []
+    },
+    "gmail": {
+      "client_id_env": "DDBT_GMAIL_CLIENT_ID",
+      "client_secret_env": "DDBT_GMAIL_CLIENT_SECRET",
+      "refresh_token_env": "DDBT_GMAIL_REFRESH_TOKEN",
+      "scopes": [
+        "https://www.googleapis.com/auth/gmail.send"
+      ]
+    },
+    "jira": {
+      "base_url": "",
+      "bot_email": "",
+      "api_token_env": "DDBT_JIRA_API_TOKEN",
+      "project_key": ""
+    }
+  }
+}
