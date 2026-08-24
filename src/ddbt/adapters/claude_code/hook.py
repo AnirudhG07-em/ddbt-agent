@@ -19,20 +19,59 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
+from pathlib import Path
 
+from ddbt.core import chromatics
 from ddbt.core.engine import Effect, Engine
+
+
+def _load_grant(cwd: str):
+    """The agent's capability ticket, if the user authored one. Looked up at
+    ``<project>/.ddbt/grant.json`` first, then ``~/.ddbt/grant.json``. Absent → no ticket
+    (the judge alone bounds the agent, exactly as before this file learned about grants)."""
+    from ddbt.core.grant import Grant
+
+    for p in (Path(cwd) / ".ddbt" / "grant.json", Path.home() / ".ddbt" / "grant.json"):
+        try:
+            if p.is_file():
+                return Grant.from_dict(json.loads(p.read_text()), now=time.time())
+        except (OSError, json.JSONDecodeError):
+            continue
+    return None
 
 
 def _engine(payload: dict) -> Engine:
     """Build the engine for a hook invocation. The v4 decider is the LLM step-judge, so a
     provider key is required; the judge fails CLOSED (deny) without one — that's the
-    judge-centric design (strict). Model overridable via DDBT_JUDGE_MODEL."""
+    judge-centric design (strict). Model overridable via DDBT_JUDGE_MODEL. A capability
+    ticket from .ddbt/grant.json, if present, is enforced deterministically before the judge."""
     session_id = payload.get("session_id", "default")
     cwd = payload.get("cwd") or "."
     from ddbt.judge.provider import make_step_judge
 
     judge = make_step_judge()
-    return Engine(session_id, workspace_root=cwd, step_judge=judge)
+    # gate_offgoal=True: interactive use should GATE a benign off-goal step (ask the human),
+    # not brick the task with a hard deny. Injection-linked deviation still hard-denies.
+    return Engine(session_id, workspace_root=cwd, step_judge=judge, grant=_load_grant(cwd),
+                  gate_offgoal=True)
+
+
+# ---- attribution: make it unmistakable that DDBT (not Claude) made this call, and which layer ----
+_SWATCH = {"none": "🟢", "low": "🟢", "med": "🟡", "high": "🔴"}
+
+
+def _layer(checkpoint: str) -> str:
+    return "ticket" if checkpoint in ("out-of-scope", "grant-fastpath") else "judge"
+
+
+def _reason(d, heat: str | None = None) -> str:
+    """One line Claude Code shows verbatim — carries the 🛡 DDBT marker, the layer that decided
+    (ticket vs judge), the chromatic risk band, the session heat, and the human reason. This is
+    how a user tells a DDBT block apart from Claude declining on its own."""
+    heat_bit = f" · heat:{heat}" if heat else ""
+    return (f"🛡 DDBT · {d.state.upper()} · via {_layer(d.checkpoint)} "
+            f"[{d.checkpoint}] {_SWATCH.get(d.risk, '')} risk:{d.risk}{heat_bit} — {d.reason}")
 
 
 def _pre_output(decision: str, reason: str = "") -> dict:
@@ -58,14 +97,20 @@ def handle_pretooluse(payload: dict) -> dict:
     eng = _engine(payload)
     try:
         decision = eng.evaluate_action(tool_name, tool_input, cwd=cwd)
+        heat = chromatics.heat_state(eng._suspicion())[0]
     finally:
         eng.close()
 
     if decision.effect == Effect.DENY:
-        return _pre_output("deny", f"[ddbt/{decision.checkpoint}] {decision.reason}")
+        return _pre_output("deny", _reason(decision, heat))
     if decision.effect == Effect.ASK:
-        return _pre_output("ask", f"[ddbt/{decision.checkpoint}] {decision.reason}")
-    return {}  # ALLOW → no objection, exit 0
+        return _pre_output("ask", _reason(decision, heat))
+    # ALLOW → stay out of the user's normal permission flow (exit 0, no decision). With
+    # DDBT_VERBOSE set, still narrate the approval so you can SEE ddbt clearing the greens —
+    # it's how you know ddbt is live and that a passed step was ddbt-approved, not unseen.
+    if os.environ.get("DDBT_VERBOSE"):
+        print(_reason(decision, heat), file=sys.stderr)
+    return {}
 
 
 def handle_posttooluse(payload: dict) -> dict:

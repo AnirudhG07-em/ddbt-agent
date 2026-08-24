@@ -11,9 +11,10 @@ from __future__ import annotations
 
 import enum
 import re
+import time
 from dataclasses import dataclass
 
-from ddbt.core import bootstrap, provenance
+from ddbt.core import bootstrap, chromatics, provenance
 from ddbt.core.audit import AuditLogger
 from ddbt.judge.provider import make_step_judge
 from ddbt.judge.step_judge import StepFacts
@@ -43,6 +44,7 @@ class Decision:
     harmful: bool = False
     stray: bool = False
     error: bool = False  # judge couldn't decide (infra failure) — denied defensively, but flagged
+    risk: str = "none"  # chromatic band (chromatics.classify): none|low|med|high — telemetry only
     audit_id: int = 0
 
     @property
@@ -57,6 +59,7 @@ class Decision:
             "relevant": self.relevant,
             "harmful": self.harmful,
             "stray": self.stray,
+            "risk": self.risk,
         }
 
 
@@ -95,6 +98,17 @@ def _string_values(obj) -> list[str]:
     return out
 
 
+def _who(labels: list[str]) -> str:
+    """Collapse the provenance labels to who chose this step's consequential value — the input
+    the chromatic band needs. 'stranger' = injection-derived, 'unknown' = no known origin."""
+    t = " ".join(labels)
+    if "INJECTION-DERIVED" in t:
+        return "stranger"
+    if "UNKNOWN origin" in t:
+        return "unknown"
+    return "you"
+
+
 def _summarize(tool: str, tool_input: dict) -> str:
     """A short, structural one-liner for the audit log (not a decision input)."""
     if not isinstance(tool_input, dict):
@@ -107,7 +121,7 @@ def _summarize(tool: str, tool_input: dict) -> str:
 
 class Engine:
     def __init__(self, session_id, workspace_root, base_dir=None, step_judge=None, ddbd=True,
-                 error_effect="ask", **_legacy):
+                 error_effect="ask", grant=None, gate_offgoal=False, **_legacy):
         # ddbd=True enables AXIS 2 (the "Don't Do Bad Things" ethics/harm layer). Axis 1
         # (goal-fidelity / anti-injection) is ALWAYS on. Benchmarks measuring operational
         # safety (e.g. R-Judge) set ddbd=False to isolate axis 1.
@@ -120,6 +134,15 @@ class Engine:
         self.store = SessionStore(session_id, base_dir=base_dir)
         self.audit = AuditLogger(self.store)
         self.step_judge = step_judge or make_step_judge()
+        # the agent's OWN scoped credentials (a capability ticket). Optional: None = the agent
+        # has whatever the harness gives it, and only the judge bounds it. When set, the grant
+        # is a deterministic floor checked BEFORE the judge — un-foolable by injection.
+        self.grant = grant
+        # when True, a benign OFF-GOAL step (clean provenance, no exfil) gates for a human
+        # instead of hard-denying — legitimate initiative shouldn't brick the task. Injection-
+        # linked deviation still hard-denies. OFF in benchmarks (preserves measured deny
+        # behaviour); ON in interactive use (the hook), where bricking is worse than asking.
+        self.gate_offgoal = gate_offgoal
         self.goal = self.store.get_meta("goal", "") or ""
 
     # ---- lifecycle ----
@@ -155,6 +178,37 @@ class Engine:
             aid = self.audit.decision(checkpoint="noop", state="allow", tool=tool_name, summary="no system effect", reason="pure tool")
             return Decision(Effect.ALLOW, "allow", "noop", "pure tool, no system effect", audit_id=aid)
 
+        # provenance labels — computed once and reused for the chromatic "who" AND the judge facts
+        labels = self._labels(tool_input)
+        who = _who(labels)
+
+        # THE HARD FLOOR: the agent's own capability ticket, checked deterministically BEFORE the
+        # judge. A stranger who has talked the agent into anything still cannot exceed this — it
+        # is policy + arithmetic, not an LLM reading text. It also carries the fast path: a safe
+        # in-scope read is allowed here with no model call at all.
+        gcheck = None
+        if self.grant is not None:
+            gcheck = self.grant.check(tool_name, tool_input, now=time.time(), used=self._grant_used())
+            if gcheck.effect == "deny":
+                # a hard-floor breach is strong evidence the session is being probed — tighten it,
+                # atomically (concurrent hooks can't lose the increment). Same monotonic ratchet the
+                # judge feeds; only a human `ddbt clear` brings it back down.
+                self.store.increment_meta("suspicion", 3)
+                aid = self.audit.decision(checkpoint="out-of-scope", state="deny", tool=tool_name,
+                                          summary=_summarize(tool_name, tool_input), reason=gcheck.reason,
+                                          suspicion=self._suspicion())
+                return Decision(Effect.DENY, "deny", "out-of-scope", gcheck.reason,
+                                relevant=False, stray=False,
+                                risk=chromatics.classify("deny", "out-of-scope", False, False, False, who),
+                                audit_id=aid)
+            if gcheck.effect == "allow":
+                aid = self.audit.decision(checkpoint="grant-fastpath", state="allow", tool=tool_name,
+                                          summary=_summarize(tool_name, tool_input), reason=gcheck.reason)
+                return Decision(Effect.ALLOW, "allow", "grant-fastpath", gcheck.reason,
+                                risk=chromatics.classify("allow", "grant-fastpath", True, False, False, who),
+                                audit_id=aid)
+            # gcheck.effect == "defer" → in scope but consequential; fall through to the judge
+
         # show the judge the quarantined output that MENTIONS this step's arguments, not
         # merely the most recent — otherwise an injection ingested a few steps ago drops out
         # of the window and an attacker only has to wait before acting on it.
@@ -165,16 +219,22 @@ class Engine:
             goal=self.goal,
             tool=tool_name,
             args=tool_input,
-            input_labels=self._labels(tool_input),
+            input_labels=labels,
             quarantined=evidence,
             history=self._history(),
         )
         verdict = self.step_judge.judge(facts)
         strictness = self._strictness()  # derived from suspicion accumulated by PRIOR steps
-        effect, checkpoint = self._combine(verdict, strictness)
+        effect, checkpoint = self._combine(verdict, strictness, who)
         if not verdict.error:
             # this step's evidence tightens FUTURE steps (see _bump_suspicion)
             self._bump_suspicion(verdict, blocked=effect is Effect.DENY)
+
+        # a consequential call that is going ahead spends one unit of its grant quota (monotonic,
+        # atomic — SAGA's OTK counter analog). ASK counts too: a gated action that a human approves
+        # still consumes the budget, and we debit at decision time so a spent ticket denies next.
+        if gcheck is not None and gcheck.quota_key and effect in (Effect.ALLOW, Effect.ASK):
+            self.store.increment_meta(f"grant_used:{gcheck.quota_key}", 1)
 
         aid = self.audit.decision(
             checkpoint=checkpoint,
@@ -190,13 +250,16 @@ class Engine:
         return Decision(
             effect, effect.value, checkpoint, verdict.reason,
             relevant=verdict.serves_goal, harmful=verdict.harmful, stray=verdict.deviation,
-            error=verdict.error, audit_id=aid,
+            error=verdict.error,
+            risk=chromatics.classify(effect.value, checkpoint, verdict.serves_goal,
+                                     verdict.harmful, verdict.deviation, who),
+            audit_id=aid,
         )
 
-    def _combine(self, verdict, strictness: int = 0) -> tuple[Effect, str]:
-        """Combine the checklist into a decision. Axis 1 (deviation) ALWAYS hard-denies; axis 2
-        (harm) denies when ddbd is on; then adaptive strictness — a session that has shown
-        malicious signals (high suspicion) progressively tightens toward lockdown."""
+    def _combine(self, verdict, strictness: int = 0, who: str = "you") -> tuple[Effect, str]:
+        """Combine the checklist into a decision. Axis 1 (deviation) hard-denies when it is
+        injection-linked; axis 2 (harm) denies when ddbd is on; then adaptive strictness — a
+        session that has shown malicious signals (high suspicion) progressively tightens."""
         if verdict.error:
             # An infra failure (rate limit, timeout, dead key) is NOT a security finding.
             # Hard-denying it means a 429 blocks a tool call in your editor, which makes the
@@ -205,7 +268,16 @@ class Engine:
             # we judged anything. Benchmarks set error_effect="deny" to measure fail-closed.
             return self.error_effect, "judge-error"
         if verdict.deviation:
-            return Effect.DENY, "goal-fidelity"  # axis 1 — anti-injection, non-negotiable
+            # Anti-injection is non-negotiable: an off-goal step that looks injection-driven
+            # (a stranger chose a value, the judge suspected injection, or it exfiltrates) is a
+            # hard DENY. But a benign off-goal step the agent took on its OWN initiative — clean
+            # provenance, no exfil — shouldn't brick the task. With gate_offgoal on, that gates
+            # for a human instead. Keying on provenance keeps real injections hard-denied.
+            injection_linked = (verdict.injection_suspected or verdict.external_exfil
+                                or who in ("stranger", "unknown"))
+            if self.gate_offgoal and not injection_linked:
+                return Effect.ASK, "off-goal-gate"
+            return Effect.DENY, "goal-fidelity"  # axis 1 — anti-injection
         if self.ddbd and verdict.harmful:
             return Effect.DENY, "ethics"  # axis 2 — only when ddbd enabled
         soft = verdict.requests_secrecy or verdict.side_task or verdict.injection_suspected
@@ -236,6 +308,12 @@ class Engine:
     # signals corroborate each other. Before this, one deviation (2) plus one side_task (1)
     # reached ELEVATED, so a single false positive could tighten a whole session.
     _MIN_CORROBORATING_SIGNALS = 2
+
+    def _grant_used(self) -> dict:
+        """Current spend per quota key, read from the durable store (survives across steps)."""
+        if not self.grant or not self.grant.quotas:
+            return {}
+        return {pat: int(self.store.get_meta(f"grant_used:{pat}", "0") or "0") for pat in self.grant.quotas}
 
     def _suspicion(self) -> int:
         return int(self.store.get_meta("suspicion", "0") or "0")

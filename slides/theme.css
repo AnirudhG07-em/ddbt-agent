@@ -12,7 +12,7 @@
 :root {
   --ink: #16202e; /* body text */
   --ink-strong: #0b1220; /* headings */
-  --muted: #64748b; /* secondary text */
+  --muted: #475569; /* secondary text — darkened for projector legibility */
   --line: #e2e8f0; /* hairlines */
   --line-strong: #cbd5e1;
   --code-bg: #f8fafc;
@@ -356,8 +356,8 @@
 }
 
 .foot {
-  font-size: 0.62em;
-  color: var(--muted);
+  font-size: 0.68em;
+  color: #334155; /* real content lives here — keep it readable, not faint */
   line-height: 1.5;
   margin-top: 0.9em;
   padding-top: 0.5em;
