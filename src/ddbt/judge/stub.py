@@ -37,7 +37,7 @@ class ScriptedStepJudge:
     e.g. ScriptedStepJudge({"send_money": "deny", "rm": "gate"}) — lets a test express the
     judge's verdicts without an LLM, while exercising real engine wiring.
 
-    'harm:<tool>' as a value marks the axis-2 harm flag (to test the ddbd ethics knob)."""
+    'harm:<tool>' as a value marks the axis-2 harm flag (to test the ddbt ethics knob)."""
 
     by_tool: dict | None = None
     default: str = "allow"

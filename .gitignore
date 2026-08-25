@@ -11,3 +11,4 @@ build
 .env.*
 bench/results/
 bench/data/injecagent
+/playground

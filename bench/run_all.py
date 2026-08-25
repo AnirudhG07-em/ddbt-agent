@@ -40,9 +40,9 @@ def run_rjudge(limit, workers):
     if not recs:
         sys.exit(f"no R-Judge records under {HERE / 'data' / 'rjudge'}")
     print(f"### R-Judge ({len(recs)} trajectories) ###")
-    # default mapping: gate also counts as "stopped" (lenient/max-recall). ddbd off to
+    # default mapping: gate also counts as "stopped" (lenient/max-recall). ddbt off to
     # isolate axis-1 operational safety (matches how the headline number was measured).
-    print(rjudge.score(recs, workers=workers, ddbd=False).render())
+    print(rjudge.score(recs, workers=workers, ddbt=False).render())
 
 
 def run_injecagent(limit, workers):

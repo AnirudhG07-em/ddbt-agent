@@ -24,7 +24,7 @@ FILENAME = "ddbt.json"
 DEFAULTS = {
     "provider": None,          # None → auto-detect from keys (see judge/provider.py)
     "model": None,             # None → the provider's default model
-    "ddbd": True,              # axis 2 (harm/ethics)
+    "ddbt": True,              # axis 2 (harm/ethics)
     "gate_offgoal": True,      # benign off-goal step → ask a human, not a hard deny
     "error_effect": "ask",     # judge infra failure → "ask" (human) or "deny" (fail-closed)
     "grant": ".ddbt/grant.json",  # path (relative to the project) or an inline grant object
@@ -37,7 +37,7 @@ DEFAULTS = {
 TEMPLATE = {
     "provider": None,
     "model": None,
-    "ddbd": True,
+    "ddbt": True,
     "gate_offgoal": True,
     "error_effect": "ask",
     "grant": ".ddbt/grant.json",
@@ -124,10 +124,10 @@ def model(cwd: str | Path | None = None) -> str | None:
 
 
 def engine_kwargs(cwd: str | Path | None = None) -> dict:
-    """The ddbd / gate_offgoal / error_effect settings the hook passes into Engine()."""
+    """The ddbt / gate_offgoal / error_effect settings the hook passes into Engine()."""
     c = load(cwd)
     return {
-        "ddbd": bool(c.get("ddbd", True)),
+        "ddbt": bool(c.get("ddbt", c.get("ddbd", True))),  # "ddbd" = legacy alias
         "gate_offgoal": bool(c.get("gate_offgoal", True)),
         "error_effect": str(c.get("error_effect", "ask")),
     }

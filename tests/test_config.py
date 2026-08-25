@@ -27,7 +27,7 @@ def test_write_default_creates_and_never_clobbers(tmp_path):
     path, written = config.write_default(tmp_path)
     assert written and path.exists()
     data = json.loads(path.read_text())
-    assert data["grant"] == ".ddbt/grant.json" and data["ddbd"] is True
+    assert data["grant"] == ".ddbt/grant.json" and data["ddbt"] is True
     # a second call must not overwrite unless forced
     _, again = config.write_default(tmp_path)
     assert again is False
@@ -35,14 +35,14 @@ def test_write_default_creates_and_never_clobbers(tmp_path):
 
 def test_missing_file_yields_defaults(tmp_path):
     c = config.load(tmp_path)
-    assert c["ddbd"] is True and c["gate_offgoal"] is True and c["provider"] is None
+    assert c["ddbt"] is True and c["gate_offgoal"] is True and c["provider"] is None
 
 
 def test_file_provides_values(tmp_path):
-    _write(tmp_path, {"provider": "anthropic", "model": "claude-x", "ddbd": False})
+    _write(tmp_path, {"provider": "anthropic", "model": "claude-x", "ddbt": False})
     assert config.provider(tmp_path) == "anthropic"
     assert config.model(tmp_path) == "claude-x"
-    assert config.engine_kwargs(tmp_path)["ddbd"] is False
+    assert config.engine_kwargs(tmp_path)["ddbt"] is False
 
 
 def test_env_overrides_file(tmp_path, monkeypatch):

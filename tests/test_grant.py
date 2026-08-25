@@ -77,7 +77,7 @@ def test_read_of_egress_is_not_fastpathed():
 
 def _engine(grant, judge=None):
     base, ws = tempfile.mkdtemp(), tempfile.mkdtemp()
-    return Engine("t-grant", ws, base_dir=base, step_judge=judge or YesJudge(), ddbd=False, grant=grant)
+    return Engine("t-grant", ws, base_dir=base, step_judge=judge or YesJudge(), ddbt=False, grant=grant)
 
 
 def test_engine_denies_out_of_scope_without_calling_judge():

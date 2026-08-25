@@ -120,11 +120,13 @@ def _summarize(tool: str, tool_input: dict) -> str:
 
 
 class Engine:
-    def __init__(self, session_id, workspace_root, base_dir=None, step_judge=None, ddbd=True,
+    def __init__(self, session_id, workspace_root, base_dir=None, step_judge=None, ddbt=True,
                  error_effect="ask", grant=None, gate_offgoal=False, **_legacy):
         self.session_id = session_id
         self.workspace_root = workspace_root
-        self.ddbd = ddbd  # axis 2 (harm/ethics). Axis 1 (goal-fidelity) is always on. Benchmarks isolating axis 1 set False.
+        # axis 2 (harm/ethics). Axis 1 (goal-fidelity) is always on; benchmarks isolating axis 1 set
+        # False. "ddbd" is accepted as a legacy alias — it's a security flag, so never silently drop it.
+        self.ddbt = bool(_legacy.get("ddbd", ddbt))
         # judge infra failure → ask (human decides) interactively, or deny (fail-closed) for benchmarks.
         self.error_effect = Effect.DENY if str(error_effect).lower() == "deny" else Effect.ASK
         self.store = SessionStore(session_id, base_dir=base_dir)
@@ -245,7 +247,7 @@ class Engine:
 
     def _combine(self, verdict, strictness: int = 0, who: str = "you") -> tuple[Effect, str]:
         """Checklist → decision. Axis 1 (deviation) hard-denies injection-linked steps; axis 2
-        (harm) denies when ddbd is on; then adaptive strictness tightens a suspicious session."""
+        (harm) denies when ddbt is on; then adaptive strictness tightens a suspicious session."""
         if verdict.error:
             # infra failure (429, timeout, dead key) is not a security finding — ask a human,
             # don't hard-deny (that would brick a tool call in your editor). Benchmarks set "deny".
@@ -259,8 +261,8 @@ class Engine:
             if self.gate_offgoal and not injection_linked:
                 return Effect.ASK, "off-goal-gate"
             return Effect.DENY, "goal-fidelity"  # axis 1
-        if self.ddbd and verdict.harmful:
-            return Effect.DENY, "ethics"  # axis 2 — only when ddbd enabled
+        if self.ddbt and verdict.harmful:
+            return Effect.DENY, "ethics"  # axis 2 — only when ddbt enabled
         soft = verdict.requests_secrecy or verdict.side_task or verdict.injection_suspected
         if strictness >= 2:  # LOCKED — session looks compromised; only basic work passes
             if verdict.high_impact or soft:

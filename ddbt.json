@@ -1,7 +1,7 @@
 {
   "provider": null,
   "model": null,
-  "ddbd": true,
+  "ddbt": true,
   "gate_offgoal": true,
   "error_effect": "ask",
   "grant": ".ddbt/grant.json",

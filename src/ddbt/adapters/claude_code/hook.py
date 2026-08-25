@@ -45,7 +45,7 @@ def _load_grant(cwd: str):
 def _engine(payload: dict) -> Engine:
     """Build the engine for a hook invocation. The decider is the LLM step-judge (fails closed
     without a provider key); a ticket, if present, is enforced before it. Provider/model and the
-    ddbd / gate_offgoal / error_effect axes all come from ddbt.json (see core/config.py)."""
+    ddbt / gate_offgoal / error_effect axes all come from ddbt.json (see core/config.py)."""
     from ddbt.core import config
     from ddbt.judge.provider import make_step_judge
 

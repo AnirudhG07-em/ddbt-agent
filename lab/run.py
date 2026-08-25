@@ -160,7 +160,7 @@ def run_session(judge) -> None:
     hr("SESSION — a whole everyday task, friction + safety")
     base, ws = tempfile.mkdtemp(), tempfile.mkdtemp()
     grant = Grant.from_dict(GRANT, now=time.time()) if GRANT else None
-    eng = Engine("lab-session", ws, base_dir=base, step_judge=judge, ddbd=False, grant=grant)
+    eng = Engine("lab-session", ws, base_dir=base, step_judge=judge, ddbt=False, grant=grant)
     try:
         print(f"  {C['cyn']}{C['bold']}goal:{C['rst']} {C['cyn']}{SESSION['goal']}{C['rst']}")
         if grant:

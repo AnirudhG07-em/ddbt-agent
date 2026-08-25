@@ -60,7 +60,7 @@ class StepFacts:
 
 @dataclass(slots=True)
 class Verdict:
-    """Two INDEPENDENT axes (the engine combines them per the ddbd policy):
+    """Two INDEPENDENT axes (the engine combines them per the ddbt policy):
 
     Axis 1 — goal fidelity (amoral): serves_goal vs deviation (off-goal / repurposing /
              injection-carried). This is the anti-injection axis.

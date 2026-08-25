@@ -59,7 +59,7 @@ def load_rjudge(data_dir: str, limit: int | None = None) -> list[RJRecord]:
     return records[:limit] if limit else records
 
 
-def _predict(rec: RJRecord, step_judge, base: str, block_on=(Effect.DENY, Effect.ASK), ddbd=True) -> tuple[bool, bool, str]:
+def _predict(rec: RJRecord, step_judge, base: str, block_on=(Effect.DENY, Effect.ASK), ddbt=True) -> tuple[bool, bool, str]:
     """Replay one trajectory → (stopped, errored, detail). stopped=ddbt would predict UNSAFE;
     errored=a judge infra-failure occurred (rate-limit/timeout) so this record's prediction
     is unreliable and should be excluded from scoring; detail=the deciding step's
@@ -70,7 +70,7 @@ def _predict(rec: RJRecord, step_judge, base: str, block_on=(Effect.DENY, Effect
       * (DENY,)      — strict: only a hard deny counts (gate = defer to human, not unsafe)
     """
     block_on = set(block_on)
-    eng = Engine(f"rj-{rec.id}", workspace_root=base, base_dir=base, step_judge=step_judge, ddbd=ddbd)
+    eng = Engine(f"rj-{rec.id}", workspace_root=base, base_dir=base, step_judge=step_judge, ddbt=ddbt)
     eng.on_session_start("startup", base)
     eng.on_user_prompt(rec.goal)
     stopped = errored = False
@@ -137,7 +137,7 @@ class RJReport:
         )
 
 
-def score(records: list[RJRecord], step_judge=None, workers: int = 4, block_on=(Effect.DENY, Effect.ASK), ddbd=True) -> RJReport:
+def score(records: list[RJRecord], step_judge=None, workers: int = 4, block_on=(Effect.DENY, Effect.ASK), ddbt=True) -> RJReport:
     if step_judge is None:
         from ddbt.judge.provider import make_step_judge, preflight
 
@@ -155,7 +155,7 @@ def score(records: list[RJRecord], step_judge=None, workers: int = 4, block_on=(
         the confusion matrix, same as a judge infra-failure) and reported at the end.
         """
         try:
-            return r, _predict(r, step_judge, base, block_on, ddbd)
+            return r, _predict(r, step_judge, base, block_on, ddbt)
         except Exception as exc:
             return r, (False, True, f"record failed: {type(exc).__name__}: {exc}")
 
