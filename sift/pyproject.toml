@@ -1,0 +1,28 @@
+[project]
+name = "sift"
+version = "0.1.0"
+description = "sift — a non-LLM semantic sandbox that classifies agent actions good/bad (embeddings + structural taint), a drop-in alternative to the ddbt LLM judge"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Anirudh Gupta" }]
+# core runs OFFLINE: numpy + scikit-learn cover the hashing encoder and methods 1,2,3,6,7.
+dependencies = ["numpy>=1.26", "scikit-learn>=1.4"]
+
+[project.optional-dependencies]
+# the real ≤100 MB, non-SLM static encoder (potion-base-32M) + minilm base for SetFit
+embed = ["model2vec>=0.3", "sentence-transformers>=3.0"]
+# methods that fine-tune the embedding itself. SetFit is implemented directly on
+# sentence-transformers (no fragile `setfit` wheel), so only these two are needed.
+finetune = ["sentence-transformers>=3.0", "model2vec[train]>=0.3"]
+all = ["model2vec[train]>=0.3", "sentence-transformers>=3.0", "datasets>=2.19", "accelerate>=1.1"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["sift"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
