@@ -1,14 +1,18 @@
-"""Per-project configuration — ``ddbt.json``.
+"""Per-project configuration — ``ddbt.json``: ONE declarative file per project.
 
-One declarative file per project: which provider/model backs the judge, which axes are on,
-where the grant lives, and (forward-looking) the agent's own scoped credentials. Discovered
-like ``.env`` — ``ddbt.json`` in the cwd or any parent, then ``~/.ddbt/ddbt.json`` as a global
-default. Env vars always win over the file, so DDBT_PROVIDER / DDBT_JUDGE_MODEL stay overrides.
+Everything that scopes an agent lives here, and each part is meant to be added to freely:
+  * judge         — which provider/model decides, and which axes are on
+  * ``policy``    — the capability ticket: what's allowed AND what's denied, per resource
+                    (tools / files / email / web / quotas). Every resource has an ``allow`` and a
+                    ``deny`` list, so blocking a mail domain or host is as easy as granting one.
+                    Add a new resource key and grant.py just reads it — nothing else to wire.
+  * ``auth``      — the agent's own scoped credentials, referenced by env-var NAME or file path,
+                    never inlined. SCAFFOLDING for now (see doc/credentials.md); nothing mints yet.
+
+Discovered like ``.env`` — ``ddbt.json`` in the cwd or any parent, then ``~/.ddbt/ddbt.json`` as a
+global default. Env vars always win, so DDBT_PROVIDER / DDBT_JUDGE_MODEL stay overrides.
 
 Precedence for any setting:  env var  >  ddbt.json  >  built-in default.
-
-The ``oauth`` block is SCAFFOLDING: the ticket (floor) runs today, but per-provider credential
-minting is not built yet, so nothing here consumes it. See doc/credentials.md.
 """
 
 from __future__ import annotations
@@ -20,28 +24,51 @@ from pathlib import Path
 
 FILENAME = "ddbt.json"
 
-# The defaults `ddbt init` writes and the loader falls back to when no file is present.
+# The defaults the loader falls back to when a setting is absent. `policy` defaults to None so that
+# a project with an external .ddbt/grant.json (legacy) still resolves; `install` writes an inline
+# policy into ddbt.json (TEMPLATE below) so the common case is genuinely one file.
 DEFAULTS = {
     "provider": None,          # None → auto-detect from keys (see judge/provider.py)
     "model": None,             # None → the provider's default model
     "ddbt": True,              # axis 2 (harm/ethics)
     "gate_offgoal": True,      # benign off-goal step → ask a human, not a hard deny
     "error_effect": "ask",     # judge infra failure → "ask" (human) or "deny" (fail-closed)
-    "grant": ".ddbt/grant.json",  # path (relative to the project) or an inline grant object
-    "oauth": {},               # forward-looking; not consumed yet (doc/credentials.md)
+    "policy": None,            # inline capability ticket (see below); None → fall back to `grant`
+    "grant": ".ddbt/grant.json",  # legacy: path to an external grant file, used only if no `policy`
+    "auth": {},                # the agent's own scoped credentials (scaffolding; doc/credentials.md)
 }
 
 
-# What `ddbt init` writes. Secrets are referenced by ENV-VAR NAME or file path — never inlined —
-# so a committed ddbt.json leaks nothing. The oauth block is scaffolding; see doc/credentials.md.
+# What `install` writes. The `policy` block is the whole ticket, inline, with allow AND deny lists
+# per resource — extend it by adding to a list or adding a new resource key. Secrets in `auth` are
+# referenced by ENV-VAR NAME or file path — never inlined — so a committed ddbt.json leaks nothing.
 TEMPLATE = {
     "provider": None,
     "model": None,
     "ddbt": True,
     "gate_offgoal": True,
     "error_effect": "ask",
-    "grant": ".ddbt/grant.json",
-    "oauth": {
+
+    "policy": {
+        "label": "ddbt assistant",
+        "ttl_seconds": 0,           # 0 = no expiry
+        "fast_path_reads": True,    # safe reads skip the judge
+        # each resource: what the agent MAY do (allow) and what it may NEVER do (deny).
+        # [] allow = "no allow-limit of this kind"; deny always subtracts and wins ties.
+        "tools": {
+            "allow": ["Read", "Grep", "Glob", "LS", "Bash", "Write", "Edit",
+                      "NotebookRead", "TodoWrite", "mcp__github__*"],
+            "deny": [],
+        },
+        "files": {  # always-on secret floor; add project paths to taste
+            "deny": ["~/.ssh/*", "**/id_rsa*", "**/.env", "~/.aws/*", "**/credentials*", "**/*.pem"],
+        },
+        "email": {"allow": [], "deny": []},   # domains the agent may / may never send to
+        "web": {"allow": [], "deny": []},     # hosts the agent may / may never reach
+        "quotas": {},                          # tool-name -> max high-impact calls, e.g. {"send_email": 3}
+    },
+
+    "auth": {
         "_status": "SCAFFOLDING — not consumed by ddbt yet. See doc/credentials.md.",
         "github": {"app_id": "", "installation_id": "", "private_key_path": ".ddbt/github-app.pem", "repositories": []},
         "gmail": {"client_id_env": "DDBT_GMAIL_CLIENT_ID", "client_secret_env": "DDBT_GMAIL_CLIENT_SECRET",
@@ -134,6 +161,22 @@ def engine_kwargs(cwd: str | Path | None = None) -> dict:
 
 
 def grant_spec(cwd: str | Path | None = None):
-    """The grant as configured: an inline dict, or a path string (relative to the project),
-    or None. The hook resolves a path relative to the project root."""
-    return load(cwd).get("grant")
+    """The capability ticket as configured. Preference order:
+      1. inline ``policy`` object (the one-file default) → returned as a dict
+      2. legacy ``grant``: an inline dict, or a path string (relative to the project)
+    The hook resolves a path relative to the project root; either dict shape loads via
+    Grant.from_dict. Returns None when nothing is configured (no ticket)."""
+    c = load(cwd)
+    if isinstance(c.get("policy"), dict):
+        return c["policy"]
+    return c.get("grant")
+
+
+def auth(cwd: str | Path | None = None) -> dict:
+    """The agent's own scoped-credential block (``auth``; ``oauth`` accepted as a legacy alias).
+    SCAFFOLDING — returned for tooling/inspection; nothing mints from it yet (doc/credentials.md)."""
+    c = load(cwd)
+    a = c.get("auth")
+    if not a:  # absent or empty → accept the legacy "oauth" key
+        a = c.get("oauth")
+    return a if isinstance(a, dict) else {}

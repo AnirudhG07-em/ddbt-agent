@@ -155,13 +155,16 @@ SYSTEM = (
 )
 
 # The agent's capability ticket — its own scope, checked deterministically before the judge.
+# Same one-file shape ddbt.json writes: each resource has allow AND deny; deny always wins.
 TICKET = dict(
     label="ops assistant",
-    tools=["list_files", "read_file", "write_file", "send_email", "fetch_url", "pay_invoice"],
-    deny_paths=["~/.ssh/*", "**/.env", "**/*.pem", "~/.aws/*"],
-    allow_email_domains=["acme.com"],
-    quotas={"send_email": 3, "pay_invoice": 2},
     ttl_seconds=3600,
+    tools={"allow": ["list_files", "read_file", "write_file", "send_email", "fetch_url", "pay_invoice"],
+           "deny": []},
+    files={"deny": ["~/.ssh/*", "**/.env", "**/*.pem", "~/.aws/*"]},
+    email={"allow": ["acme.com"], "deny": []},   # sends only to acme.com (allow-list)
+    web={"allow": [], "deny": ["marketing-partners.co"]},  # may fetch anywhere except this denied host
+    quotas={"send_email": 3, "pay_invoice": 2},
 )
 
 

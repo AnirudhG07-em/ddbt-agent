@@ -20,8 +20,9 @@ from ddbt.core.engine import Effect, Engine
 
 
 def _load_grant(cwd: str):
-    """The agent's capability ticket. From ddbt.json's "grant" (an inline object or a path),
-    else <project>/.ddbt/grant.json, then ~/.ddbt/grant.json. Absent → no ticket."""
+    """The agent's capability ticket. From ddbt.json's inline "policy" (or the legacy "grant":
+    an object or a path), else <project>/.ddbt/grant.json, then ~/.ddbt/grant.json. Absent → no
+    ticket. Every shape loads through Grant.from_dict (nested and flat both accepted)."""
     from ddbt.core import config
     from ddbt.core.grant import Grant
 

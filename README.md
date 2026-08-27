@@ -143,8 +143,10 @@ field (the system chose it) vs. free text (its author did).
 keycard programmed for one room. It's a short list you write down: which tools it may use, which
 places it may reach (paths, email domains, hosts), how many times, and for how long. It's checked
 by plain code — no AI reading text — *before* the judge, so a stranger can't sweet-talk the agent
-past it. It's the agent's own limited keychain, **not your master key**. You author it in
-`.ddbt/grant.json`; if it's missing, the agent just runs under the judge alone.
+past it. It's the agent's own limited keychain, **not your master key**. You author it in the
+`policy` block of `ddbt.json` — every resource takes an `allow` list and a `deny` list, so blocking
+a mail domain or a host is as easy as granting one. If there's no policy, the agent runs under the
+judge alone.
 
 **Provenance is the heart of Axis 1.** The question is never "did this value appear in a tool
 output" (legitimate values do — read-then-act is normal), but "**could a stranger have chosen
@@ -215,8 +217,8 @@ layers, same defence-in-depth idea:
 **Ticket layer — the floor (ddbt, live today).** One uniform policy the providers can't express,
 checked _before_ the call: email only to `acme.com`, reach only `github.com`, at most 3 sends,
 never touch `~/.ssh` or `.env`, expires in an hour. This is the only layer that can catch an
-**injection-chosen** destination, because it runs on provenance, not trust. Authored in
-`.ddbt/grant.json`; see `src/ddbt/core/grant.py`.
+**injection-chosen** destination, because it runs on provenance, not trust. Authored in the
+`policy` block of `ddbt.json` (allow/deny per resource); see `src/ddbt/core/grant.py`.
 
 **Credential layer — the ceiling (provider-side).** A real scoped token per service, so even if
 ddbt is bypassed the token _literally cannot_ reach the rest of your account:
@@ -229,6 +231,36 @@ ddbt is bypassed the token _literally cannot_ reach the rest of your account:
 > implemented — and needs testing.** The design drops into the same model (ceiling + floor, a leak
 > in either caught by the other), but the OAuth/token-minting half is a proposal until it's built
 > and measured. Don't cite it as working.
+
+## Configuring it — one file
+
+`ddbt init`/`install` writes a single **`ddbt.json`** per project (discovered like `.env`: cwd →
+parents → `~/.ddbt/ddbt.json`; env vars override). Everything lives here: which model judges, the
+**policy** (the ticket), and the agent's own **auth**. Each resource under `policy` has an `allow`
+list _and_ a `deny` list — so blocking mail, a host, or a tool is the same one-liner as granting it,
+and adding a new limit is just adding to a list. `deny` always wins over `allow`.
+
+```jsonc
+{
+  "provider": null, "model": null,          // null → auto-detect / provider default
+  "ddbt": true, "gate_offgoal": true,       // axis 2 on; benign off-goal step → ask, not deny
+
+  "policy": {                               // the capability ticket, enforced before the judge
+    "ttl_seconds": 3600,
+    "tools":  { "allow": ["Read", "Write", "send_email"], "deny": ["pay_invoice"] },
+    "files":  { "deny":  ["~/.ssh/*", "**/.env", "**/*.pem"] },   // always-on secret floor
+    "email":  { "allow": ["acme.com"], "deny": ["marketing-partners.co"] },
+    "web":    { "allow": [], "deny": ["evil.io"] },               // [] allow = no allow-limit
+    "quotas": { "send_email": 3, "pay_invoice": 2 }
+  },
+
+  "auth": { "gmail": { "refresh_token_env": "DDBT_GMAIL_REFRESH_TOKEN" } }  // env-var NAMES, never secrets
+}
+```
+
+Secrets are **referenced** (`..._env` = env-var name, `..._path` = gitignored file), never inlined,
+so `ddbt.json` is safe to commit. See `doc/credentials.md` for the `auth` block; the loader is
+`src/ddbt/core/config.py`, the enforcement `src/ddbt/core/grant.py`.
 
 ## Testing
 

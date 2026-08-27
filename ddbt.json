@@ -4,8 +4,46 @@
   "ddbt": true,
   "gate_offgoal": true,
   "error_effect": "ask",
-  "grant": ".ddbt/grant.json",
-  "oauth": {
+  "policy": {
+    "label": "ddbt assistant",
+    "ttl_seconds": 0,
+    "fast_path_reads": true,
+    "tools": {
+      "allow": [
+        "Read",
+        "Grep",
+        "Glob",
+        "LS",
+        "Bash",
+        "Write",
+        "Edit",
+        "NotebookRead",
+        "TodoWrite",
+        "mcp__github__*"
+      ],
+      "deny": []
+    },
+    "files": {
+      "deny": [
+        "~/.ssh/*",
+        "**/id_rsa*",
+        "**/.env",
+        "~/.aws/*",
+        "**/credentials*",
+        "**/*.pem"
+      ]
+    },
+    "email": {
+      "allow": [],
+      "deny": []
+    },
+    "web": {
+      "allow": [],
+      "deny": []
+    },
+    "quotas": {}
+  },
+  "auth": {
     "_status": "SCAFFOLDING — not consumed by ddbt yet. See doc/credentials.md.",
     "github": {
       "app_id": "",

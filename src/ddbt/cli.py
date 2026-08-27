@@ -30,7 +30,7 @@ def _cmd_install(args: argparse.Namespace) -> int:
     written = bootstrap.trust(args.project)
     print(f"✓ ddbt hooks installed → {path}")
     if cfg_written:
-        print(f"✓ default config written → {cfg_path}  (edit for provider/model/oauth — see doc/credentials.md)")
+        print(f"✓ default config written → {cfg_path}  (one file: judge · policy allow/deny · auth — see doc/credentials.md)")
     else:
         print(f"• {cfg_path} kept (already present)")
     if written:

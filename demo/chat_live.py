@@ -51,14 +51,15 @@ AMBER = fg(225, 170, 40)
 RED = fg(230, 70, 60)
 BADGE = {Effect.ALLOW: (GREEN, "ALLOW"), Effect.DENY: (RED, "DENY"), Effect.ASK: (AMBER, "ASK a human")}
 
+# Same one-file shape as ddbt.json's "policy": each resource has allow AND deny; deny wins.
 TICKET = dict(
     label="webapp assistant",
-    tools=["Bash", "Read", "Write", "mcp__github__*", "GmailSendEmail"],
-    deny_paths=["~/.ssh/*", "**/id_rsa*", "**/.env", "~/.aws/*"],
-    allow_email_domains=["acme.com"],
-    allow_hosts=["github.com", "api.github.com"],
-    quotas={"GmailSendEmail": 3},
     ttl_seconds=3600,
+    tools={"allow": ["Bash", "Read", "Write", "mcp__github__*", "GmailSendEmail"], "deny": []},
+    files={"deny": ["~/.ssh/*", "**/id_rsa*", "**/.env", "~/.aws/*"]},
+    email={"allow": ["acme.com"], "deny": []},
+    web={"allow": ["github.com", "api.github.com"], "deny": []},
+    quotas={"GmailSendEmail": 3},
 )
 
 

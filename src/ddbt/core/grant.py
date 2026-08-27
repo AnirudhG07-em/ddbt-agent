@@ -9,6 +9,14 @@ Three outcomes, all before the judge runs:
   DENY  — out of scope (tool/destination/path/quota/expiry). The hard floor. No model call.
   ALLOW — provably safe and in scope (a read, no egress). The fast path. No model call.
   DEFER — in scope but consequential → hand to the step-judge.
+
+The policy is expressed per RESOURCE, each with an ``allow`` and a ``deny`` list, so blocking is
+symmetric with granting — you can deny a mail domain, a host, or a tool as easily as allowing one.
+Two schemas load transparently (see :meth:`Grant.from_dict`):
+  * nested (preferred, what ddbt.json writes):  {"tools": {"allow": [...], "deny": [...]},
+    "files": {"deny": [...]}, "email": {"allow": [...], "deny": [...]}, "web": {...}, "quotas": {}}
+  * flat legacy (old .ddbt/grant.json):  {"tools": [...], "deny_paths": [...],
+    "allow_email_domains": [...], "allow_hosts": [...], "quotas": {}}
 """
 
 from __future__ import annotations
@@ -33,15 +41,38 @@ class GrantCheck:
     quota_key: str | None = None  # if set, a quota'd tool — engine debits it when the call runs
 
 
+def _section(d: dict, key: str, legacy_allow: str | None = None, legacy_deny: str | None = None):
+    """Pull (allow, deny) for one resource, accepting either schema.
+
+    Nested:  d[key] is a dict → its "allow"/"deny" lists.
+    Legacy:  d[key] is a bare list → treat as the allow-list; deny comes from `legacy_deny`.
+    Absent:  fall back to the flat legacy top-level keys.
+    """
+    v = d.get(key)
+    if isinstance(v, dict):
+        return list(v.get("allow", [])), list(v.get("deny", []))
+    allow = list(v) if isinstance(v, list) else list(d.get(legacy_allow, []) if legacy_allow else [])
+    deny = list(d.get(legacy_deny, []) if legacy_deny else [])
+    return allow, deny
+
+
+def _lower(xs) -> list[str]:
+    return [str(x).lower() for x in (xs or [])]
+
+
 @dataclass(slots=True)
 class Grant:
-    """A user-authored scope for one agent session. Empty lists/dicts mean 'no limit of that
-    kind'; the one always-on rule is `deny_paths` (secrets stay off-limits)."""
+    """A user-authored scope for one agent session. An empty allow-list means 'no allow-limit of
+    that kind'; a deny-list always subtracts. The one always-on rule is file `deny` (secrets stay
+    off-limits). Deny wins over allow wherever both could match."""
 
-    tools: list[str] = field(default_factory=list)          # allowed tool globs; [] = any tool
-    deny_paths: list[str] = field(default_factory=list)      # never touch (e.g. "~/.ssh/*")
+    tools: list[str] = field(default_factory=list)           # allowed tool globs; [] = any tool
+    deny_tools: list[str] = field(default_factory=list)       # tool globs never permitted
+    deny_paths: list[str] = field(default_factory=list)       # paths never touched (e.g. "~/.ssh/*")
     allow_email_domains: list[str] = field(default_factory=list)  # sends only to these; [] = any
+    deny_email_domains: list[str] = field(default_factory=list)   # never mail these domains
     allow_hosts: list[str] = field(default_factory=list)     # URLs only to these hosts; [] = any
+    deny_hosts: list[str] = field(default_factory=list)      # never reach these hosts
     quotas: dict = field(default_factory=dict)               # tool-glob -> max high-impact calls
     ttl_seconds: int = 0                                     # 0 = no expiry
     issued_at: float = 0.0
@@ -50,11 +81,21 @@ class Grant:
 
     @classmethod
     def from_dict(cls, d: dict, now: float = 0.0) -> "Grant":
+        tools_allow, tools_deny = _section(d, "tools", legacy_allow="tools", legacy_deny="deny_tools")
+        email_allow, email_deny = _section(d, "email", legacy_allow="allow_email_domains",
+                                           legacy_deny="deny_email_domains")
+        host_allow, host_deny = _section(d, "web", legacy_allow="allow_hosts", legacy_deny="deny_hosts")
+        files = d.get("files")
+        # paths are case-sensitive globs → keep original case (don't route through _section/_lower)
+        deny_paths = list(files.get("deny", [])) if isinstance(files, dict) else list(d.get("deny_paths", []))
         g = cls(
-            tools=list(d.get("tools", [])),
-            deny_paths=list(d.get("deny_paths", [])),
-            allow_email_domains=[x.lower() for x in d.get("allow_email_domains", [])],
-            allow_hosts=[x.lower() for x in d.get("allow_hosts", [])],
+            tools=tools_allow,          # original case kept for display; matched case-insensitively
+            deny_tools=tools_deny,
+            deny_paths=deny_paths,
+            allow_email_domains=_lower(email_allow),  # domains/hosts are case-insensitive
+            deny_email_domains=_lower(email_deny),
+            allow_hosts=_lower(host_allow),
+            deny_hosts=_lower(host_deny),
             quotas=dict(d.get("quotas", {})),
             ttl_seconds=int(d.get("ttl_seconds", 0)),
             fast_path_reads=bool(d.get("fast_path_reads", True)),
@@ -68,13 +109,16 @@ class Grant:
     def check(self, tool: str, args: dict, now: float, used: dict | None = None) -> GrantCheck:
         used = used or {}
         strings = _strings(args)
+        tool_l = tool.lower()
 
         # 1. expiry — a stale ticket grants nothing
         if self.ttl_seconds and self.issued_at and now - self.issued_at > self.ttl_seconds:
             return GrantCheck("deny", f"grant expired ({int(now - self.issued_at)}s > {self.ttl_seconds}s TTL)")
 
-        # 2. tool must be in the granted set
-        if self.tools and not any(fnmatch.fnmatch(tool, pat) for pat in self.tools):
+        # 2. tool scope — deny-list wins, then the allow-list must admit it (case-insensitive)
+        if any(fnmatch.fnmatch(tool_l, pat.lower()) for pat in self.deny_tools):
+            return GrantCheck("deny", f"tool '{tool}' is denied by this agent's grant")
+        if self.tools and not any(fnmatch.fnmatch(tool_l, pat.lower()) for pat in self.tools):
             return GrantCheck("deny", f"tool '{tool}' is not in this agent's grant")
 
         # 3. secret / forbidden paths — always on, the one non-negotiable
@@ -82,12 +126,16 @@ class Grant:
         if hit:
             return GrantCheck("deny", f"grant forbids touching {hit}")
 
-        # 4. destinations must be allow-listed (only enforced when a destination is present)
+        # 4. destinations — deny-list wins, then the allow-list must admit it (only when present)
         for dom in _email_domains(strings):
+            if dom in self.deny_email_domains:
+                return GrantCheck("deny", f"email to '{dom}' is denied by the grant")
             if self.allow_email_domains and dom not in self.allow_email_domains:
                 return GrantCheck("deny", f"email to '{dom}' is outside the grant "
                                           f"(allowed: {', '.join(self.allow_email_domains)})")
         for host in _url_hosts(strings):
+            if host in self.deny_hosts:
+                return GrantCheck("deny", f"host '{host}' is denied by the grant")
             if self.allow_hosts and host not in self.allow_hosts:
                 return GrantCheck("deny", f"request to host '{host}' is outside the grant "
                                           f"(allowed: {', '.join(self.allow_hosts)})")
@@ -111,10 +159,16 @@ class Grant:
         bits = []
         if self.tools:
             bits.append(f"tools={','.join(self.tools)}")
+        if self.deny_tools:
+            bits.append(f"!tools={','.join(self.deny_tools)}")
         if self.allow_email_domains:
             bits.append(f"email→{','.join(self.allow_email_domains)}")
+        if self.deny_email_domains:
+            bits.append(f"!email={','.join(self.deny_email_domains)}")
         if self.allow_hosts:
             bits.append(f"hosts→{','.join(self.allow_hosts)}")
+        if self.deny_hosts:
+            bits.append(f"!hosts={','.join(self.deny_hosts)}")
         if self.quotas:
             bits.append("quota=" + ",".join(f"{k}:{v}" for k, v in self.quotas.items()))
         if self.deny_paths:

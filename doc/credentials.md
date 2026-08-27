@@ -1,9 +1,12 @@
 # Giving the agent its own identity — credentials for `ddbt.json`
 
-> **Status.** The **ticket** (floor) runs today — that's `.ddbt/grant.json`, enforced before every
-> call. The **provider credentials** (ceiling) described here are the *next build*: `ddbt.json`'s
-> `oauth` block is scaffolding, and nothing in ddbt consumes it yet. This doc is how you'll fill it
-> once minting lands — and it doubles as the spec for that build. Don't treat the ceiling as live.
+> **One file.** Everything that scopes the agent lives in `ddbt.json`: the judge settings, the
+> **`policy`** block (the ticket — allow/deny per resource), and the **`auth`** block (below).
+>
+> **Status.** The **ticket** (floor) runs today — it's the inline `policy` in `ddbt.json`, enforced
+> before every call. The **provider credentials** (ceiling) described here are the *next build*:
+> the `auth` block is scaffolding, and nothing in ddbt consumes it yet. This doc is how you'll fill
+> it once minting lands — and it doubles as the spec for that build. Don't treat the ceiling as live.
 
 The idea (see the README's *"acts on your behalf, not on your account"*): the agent is a **separate
 principal**. It gets its *own* scoped token per service, so even if ddbt is bypassed the token
@@ -13,7 +16,9 @@ principal**. It gets its *own* scoped token per service, so even if ddbt is bypa
   allows. This is the hard limit — the agent can't exceed it no matter what.
 - **Floor (ddbt ticket):** one uniform, task-shaped policy the providers can't express — "email
   only `acme.com`, at most 3 sends, expires in 1h" — checked *before* the call, on provenance. This
-  is the only layer that catches an **injection-chosen** destination. Author it in `.ddbt/grant.json`.
+  is the only layer that catches an **injection-chosen** destination. Author it in the `policy`
+  block of `ddbt.json` — each resource (`tools`/`files`/`email`/`web`) takes an `allow` and a `deny`
+  list, so you can grant a domain or block one with the same two lines.
 
 Fill the floor first (it works now). The ceiling is below.
 
@@ -129,6 +134,6 @@ export DDBT_JIRA_API_TOKEN="...."
 | **Gmail** | OAuth `gmail.send` only | recipient domain allow-list, N sends, TTL |
 | **Jira** | bot user, one project role | one project, N transitions, TTL |
 
-A leak in either layer is caught by the other. Today the floor is real (`.ddbt/grant.json`); the
+A leak in either layer is caught by the other. Today the floor is real (the `policy` block); the
 ceiling above is the spec for what mints these tokens next — build it, then measure it before you
 call it done.

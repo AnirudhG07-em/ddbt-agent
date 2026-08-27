@@ -48,6 +48,30 @@ def test_host_allowlist():
     assert g.check("Bash", {"command": "curl https://exfil.io/x"}, now=1000.0).effect == "deny"
 
 
+def test_deny_lists_win_over_allow():
+    # nested schema: an explicit deny blocks even when the allow-list would admit it
+    g = Grant.from_dict({
+        "tools": {"allow": ["*"], "deny": ["pay_invoice"]},
+        "email": {"allow": ["acme.com"], "deny": ["partner.acme.com"]},
+        "web": {"deny": ["evil.io"]},
+    }, now=1000.0)
+    assert g.check("pay_invoice", {"account": "x"}, now=1000.0).effect == "deny"
+    # denied sub-domain loses even though the parent domain is allow-listed
+    assert g.check("send_email", {"to": "a@partner.acme.com"}, now=1000.0).effect == "deny"
+    assert g.check("fetch_url", {"url": "https://evil.io/x"}, now=1000.0).effect == "deny"
+    # something the allow-list admits and no deny touches still passes
+    assert g.check("send_email", {"to": "a@acme.com"}, now=1000.0).effect != "deny"
+
+
+def test_nested_and_flat_schemas_are_equivalent():
+    nested = Grant.from_dict({"tools": {"allow": ["Read"]}, "files": {"deny": ["**/.env"]}}, now=0.0)
+    flat = Grant.from_dict({"tools": ["Read"], "deny_paths": ["**/.env"]}, now=0.0)
+    for g in (nested, flat):
+        assert g.check("Read", {"file_path": "a.txt"}, now=0.0).effect == "allow"
+        assert g.check("Read", {"file_path": "config/.env"}, now=0.0).effect == "deny"
+        assert g.check("Bash", {"command": "ls"}, now=0.0).effect == "deny"
+
+
 def test_quota_denies_when_spent():
     g = _grant(quotas={"GmailSendEmail": 2})
     assert g.check("GmailSendEmail", {"to": "a@b.com"}, now=1000.0, used={"GmailSendEmail": 1}).effect != "deny"

@@ -27,10 +27,31 @@ def test_write_default_creates_and_never_clobbers(tmp_path):
     path, written = config.write_default(tmp_path)
     assert written and path.exists()
     data = json.loads(path.read_text())
-    assert data["grant"] == ".ddbt/grant.json" and data["ddbt"] is True
+    # one file: the ticket is inline under "policy" (allow/deny per resource), plus "auth"
+    assert data["ddbt"] is True
+    assert isinstance(data["policy"]["tools"]["allow"], list)
+    assert data["policy"]["files"]["deny"]  # secret floor present
+    assert set(data["policy"]["email"]) == {"allow", "deny"}
+    assert "auth" in data
     # a second call must not overwrite unless forced
     _, again = config.write_default(tmp_path)
     assert again is False
+
+
+def test_inline_policy_is_the_grant_spec(tmp_path):
+    _write(tmp_path, {"policy": {"tools": {"allow": ["Read"]}, "email": {"deny": ["evil.io"]}}})
+    spec = config.grant_spec(tmp_path)
+    assert spec["email"]["deny"] == ["evil.io"]
+
+
+def test_policy_wins_over_legacy_grant(tmp_path):
+    _write(tmp_path, {"policy": {"tools": {"allow": ["Read"]}}, "grant": ".ddbt/grant.json"})
+    assert config.grant_spec(tmp_path) == {"tools": {"allow": ["Read"]}}
+
+
+def test_auth_reads_oauth_legacy_alias(tmp_path):
+    _write(tmp_path, {"oauth": {"github": {"app_id": "x"}}})
+    assert config.auth(tmp_path)["github"]["app_id"] == "x"
 
 
 def test_missing_file_yields_defaults(tmp_path):
