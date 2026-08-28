@@ -20,7 +20,26 @@ it used, so a bake-off run never silently dies on a missing dependency.
 from __future__ import annotations
 
 import hashlib
+import os
+
 import numpy as np
+
+# Silence the model-load progress bars (huggingface_hub "Fetching N files", model2vec reconstruct,
+# tokenizers fork warning) — they otherwise spam the terminal every time ddbt loads the encoder, and
+# could corrupt the Claude Code hook's stdout. Must be set BEFORE huggingface_hub/model2vec import.
+os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
+
+def _quiet_hub():
+    """Belt-and-suspenders: also call the API that disables tqdm bars, if present."""
+    try:
+        from huggingface_hub.utils import disable_progress_bars
+        disable_progress_bars()
+    except Exception:
+        pass
+
 
 DEFAULT = "model2vec"
 MODEL2VEC_ID = "minishlab/potion-base-32M"
@@ -67,8 +86,13 @@ class Model2VecEncoder(Encoder):
     citation = "Model2Vec potion-base-32M, MinishLab 2024 (github.com/MinishLab/model2vec)"
 
     def __init__(self, model_id: str = MODEL2VEC_ID):
-        from model2vec import StaticModel  # lazy
-        self.model = StaticModel.from_pretrained(model_id)
+        import contextlib
+        _quiet_hub()
+        # model2vec/huggingface also print reconstruct/download lines to stdout — swallow them during
+        # the one-time load so nothing reaches the terminal (or the hook's stdout).
+        with open(os.devnull, "w") as _dn, contextlib.redirect_stdout(_dn), contextlib.redirect_stderr(_dn):
+            from model2vec import StaticModel  # lazy
+            self.model = StaticModel.from_pretrained(model_id)
         self.dim = int(self.model.dim)
 
     def encode(self, texts: list[str]) -> np.ndarray:

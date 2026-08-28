@@ -78,29 +78,38 @@ weak false-positive rate.
 
 ![sift vs LLM](docs/sift_vs_llm.svg)
 
-| method | R-Judge F1 | InjecAgent | MCPTox | ~speed/query | cost | status |
-|---|---|---|---|---|---|---|
-| **fusion** | **0.87** | 1.00 | 1.00 | ~62 ms | **$0** | **deployed** |
-| model2vec_trained | 0.89 | 1.00 | 1.00 | ~35 ms | $0 | comparator |
-| static_linear | 0.88 | 1.00 | 0.99 | ~60 ms | $0 | comparator |
-| static_gbt | 0.87 | 1.00 | 1.00 | ~60 ms | $0 | comparator |
-| anomaly | 0.84 | 1.00 | 0.97 | ~60 ms | $0 | comparator |
-| setfit | 0.83 | ~1.00 | 0.99 | ~180 ms | $0 | experimental |
-| prototypes | 0.69 | 0.82 | 0.81 | ~60 ms | $0 | comparator |
-| **LLM judge** (ddbt) | **0.915** | **1.00** | **0.998** | ~hundreds ms | **API $ + network** | flagged fallback |
+Read **R@5%FPR** (recall at a fixed 5% false-positive rate) as the deciding column — it's the metric a
+deployed gate actually runs at. **F1 is oracle-thresholded** (the best cutoff in hindsight), so it
+flatters methods that can't hold a real operating point.
 
-![methods on R-Judge](docs/methods.svg)
+| method | R-Judge **R@5%FPR** | R-Judge F1 | InjecAgent | MCPTox | ~speed | status |
+|---|---|---|---|---|---|---|
+| **fusion** | **0.43** | 0.87 | 1.00 | 1.00 | ~62 ms | **deployed** |
+| static_gbt | 0.40 | 0.87 | 1.00 | 1.00 | ~60 ms | comparator |
+| model2vec_trained | 0.33 | 0.89 | 1.00 | 1.00 | ~35 ms | comparator |
+| static_linear | 0.30 | 0.88 | 1.00 | 0.99 | ~60 ms | comparator |
+| setfit | 0.24 | 0.83 | ~1.00 | 0.99 | ~180 ms | experimental |
+| anomaly | 0.16 | **0.87** | 1.00 | 0.97 | ~60 ms | comparator |
+| prototypes | 0.04 | 0.69 | 0.82 | 0.81 | ~60 ms | comparator |
+| **LLM judge** (ddbt) | — | **0.915** | **1.00** | **0.998** | ~hundreds ms | flagged fallback |
+
+![why fusion — R-Judge recall@5%FPR](docs/methods.svg)
+
+**Why `fusion` despite others' higher F1.** The F1 spread across the top methods is within noise (168-
+sample R-Judge test), and F1 uses an oracle-best threshold no real gate has. At the **operating point
+(R@5%FPR on the adversarial set) `fusion` leads (0.43)**, while `anomaly` — top on F1 (0.87) — collapses
+to 0.16, and `static_linear`'s strong F1 hides a shift F1 of 0.76. On top of that, only `fusion` carries
+the deterministic **structural/taint** layer, so exfil detection stays exact even when the embedding is
+fooled; `model2vec_trained` (the real rival) is pure-embedding and needs a fine-tune to retrain.
 
 **What the methods are** (all ≤100 MB, none an SLM): `static_linear`/`static_gbt` put a linear or
 gradient-boosted head on a *frozen* potion-32M embedding; `prototypes` is zero-shot nearest-centroid
 cosine to the malicious catalog (interpretable, one-line-extensible); `anomaly` scores distance from
-the benign manifold (catches novel attacks); `model2vec_trained` fine-tunes the static embedding;
-`setfit` (experimental, dropped) is a contrastive MiniLM fine-tune — it only ties the others but is
-~3× slower to serve and minutes to train; **`fusion` (deployed)** concatenates the frozen embedding
-with the deterministic **structural/taint** features and learns a GBT over both — the ensemble the
-evasion literature recommends, and the one that keeps exfil detection exact even when the ML is fooled.
-On InjecAgent and MCPTox sift matches the LLM; on R-Judge it trails 0.87 vs 0.915 — the honest gap,
-closable with distillation. Charts regenerate via `python plot_results.py`.
+the benign manifold (great F1, poor at a strict FPR); `model2vec_trained` fine-tunes the static
+embedding; `setfit` (experimental, dropped) is a contrastive MiniLM fine-tune, ~3× slower and no
+better; **`fusion` (deployed)** concatenates the frozen embedding with the structural/taint features
+and learns a GBT over both — the ensemble the evasion literature recommends. Charts regenerate via
+`python plot_results.py`.
 
 ## Deployed model & ddbt integration
 

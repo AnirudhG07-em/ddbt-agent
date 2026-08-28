@@ -17,17 +17,19 @@ SIFT_VS_LLM = [  # (benchmark, sift F1, llm F1)
     ("InjecAgent", 1.00, 1.00),
     ("MCPTox", 1.00, 0.998),
 ]
-# R-Judge test F1 by method (the discriminating benchmark); llm reference line = 0.915
+# R-Judge recall@5%FPR on the SHIFT (adversarial) set — the metric a deployed gate actually runs at
+# (fixed low false-positive rate), unlike F1 which uses an oracle-best threshold. This is why fusion
+# is deployed even though a couple of methods edge it on F1.
 LEADERBOARD = [
-    ("model2vec_trained", 0.89),
-    ("static_linear", 0.88),
-    ("fusion (deployed)", 0.87),
-    ("static_gbt", 0.87),
-    ("anomaly", 0.84),
-    ("setfit (exp.)", 0.83),
-    ("prototypes", 0.69),
+    ("fusion (deployed)", 0.43),
+    ("static_gbt", 0.40),
+    ("model2vec_trained", 0.33),
+    ("static_linear", 0.30),
+    ("setfit (exp.)", 0.24),
+    ("anomaly", 0.16),
+    ("prototypes", 0.04),
 ]
-LLM_REF = 0.915
+LLM_REF = None  # not comparable at this metric (the LLM judge runs at its own threshold)
 
 TEAL, GRAY, INK, MUT, CARD, GRID = "#0d9488", "#94a3b8", "#0f172a", "#64748b", "#ffffff", "#e2e8f0"
 
@@ -69,15 +71,16 @@ def _leaderboard(path: Path):
     W = 720
     rowh, top = 34, 92
     H = top + rowh * len(LEADERBOARD) + 30
-    x0, x1 = 210, 660
-    def X(v): return x0 + (x1 - x0) * v
+    x0, x1, xmax = 210, 660, 0.5   # values are recall@5%FPR (≤~0.43) → scale axis to 0.5
+    def X(v): return x0 + (x1 - x0) * (v / xmax)
     s = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" font-family="Segoe UI,Helvetica,Arial,sans-serif">']
     s.append(f'<rect width="{W}" height="{H}" rx="12" fill="{CARD}"/>')
-    s.append(f'<text x="40" y="36" font-size="19" font-weight="700" fill="{INK}">sift methods — R-Judge F1 (the hard benchmark)</text>')
-    s.append(f'<text x="40" y="55" font-size="12.5" fill="{MUT}">all ≤100 MB, no LLM. dashed line = LLM judge (0.915)</text>')
-    ref = X(LLM_REF)
-    s.append(f'<line x1="{ref:.1f}" y1="{top-8}" x2="{ref:.1f}" y2="{H-18}" stroke="{INK}" stroke-dasharray="4 4" opacity="0.55"/>')
-    s.append(f'<text x="{ref:.1f}" y="{top-14}" font-size="11" text-anchor="middle" fill="{INK}">LLM 0.915</text>')
+    s.append(f'<text x="40" y="36" font-size="19" font-weight="700" fill="{INK}">Why fusion — R-Judge recall @ 5% FPR (adversarial set)</text>')
+    s.append(f'<text x="40" y="55" font-size="12.5" fill="{MUT}">the metric a deployed gate runs at (fixed low false-positive rate), not oracle-thresholded F1</text>')
+    if LLM_REF is not None:
+        ref = X(LLM_REF)
+        s.append(f'<line x1="{ref:.1f}" y1="{top-8}" x2="{ref:.1f}" y2="{H-18}" stroke="{INK}" stroke-dasharray="4 4" opacity="0.55"/>')
+        s.append(f'<text x="{ref:.1f}" y="{top-14}" font-size="11" text-anchor="middle" fill="{INK}">LLM {LLM_REF}</text>')
     for i, (name, val) in enumerate(LEADERBOARD):
         y = top + rowh * i
         col = TEAL if "deployed" in name else (GRAY if "exp." in name else "#38bdf8")
