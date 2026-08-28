@@ -147,14 +147,22 @@ def test_decision_carries_chromatic_band():
 
 # ---- hook attribution & grant loading ----
 
-def test_hook_loads_grant_from_project(tmp_path):
-    from ddbt.adapters.claude_code.hook import _load_grant
+def test_hook_loads_policy_from_ddbt_json(tmp_path):
+    import json
 
-    (tmp_path / ".ddbt").mkdir()
-    (tmp_path / ".ddbt" / "grant.json").write_text('{"tools":["Read"],"allow_email_domains":["acme.com"]}')
+    from ddbt.adapters.claude_code.hook import _load_grant
+    from ddbt.core import config
+
+    (tmp_path / "ddbt.json").write_text(json.dumps(
+        {"policy": {"tools": {"allow": ["Read"]}, "email": {"allow": ["acme.com"]}}}))
+    config._load_raw.cache_clear()
     g = _load_grant(str(tmp_path))
     assert g is not None and g.allow_email_domains == ["acme.com"]
-    assert _load_grant(str(tmp_path / "nope")) is None  # missing → no ticket
+    # remove it → no ticket (ddbt.json is discovered up the tree like .env)
+    (tmp_path / "ddbt.json").unlink()
+    config._load_raw.cache_clear()
+    assert _load_grant(str(tmp_path)) is None
+    config._load_raw.cache_clear()
 
 
 def test_hook_reason_is_attributed_and_chromatic():

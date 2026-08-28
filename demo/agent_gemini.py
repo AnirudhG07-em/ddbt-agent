@@ -235,8 +235,12 @@ def main(argv=None):
     ap.add_argument("--no-harm", action="store_true",
                     help="turn OFF axis 2 (the ddbt harm layer); anti-injection (axis 1) stays on")
     ap.add_argument("--model", default=os.environ.get("DDBT_JUDGE_MODEL") or "gemini-2.5-flash",
-                    help="Gemini model for the agent (default: gemini-2.5-flash)")
+                    help="Gemini model for the AGENT (default: gemini-2.5-flash)")
+    ap.add_argument("--llm", action="store_true",
+                    help="ddbt decides with the LLM judge instead of the local sift judge (default)")
     args = ap.parse_args(argv)
+    if args.llm:
+        os.environ["DDBT_JUDGE"] = "llm"
 
     client = build_client()
     model = args.model
@@ -247,11 +251,13 @@ def main(argv=None):
     base, ws = tempfile.mkdtemp(), tempfile.mkdtemp()
     from ddbt.judge.provider import make_step_judge
 
-    eng = Engine("agent-gemini", ws, base_dir=base, step_judge=make_step_judge(),
+    step_judge = make_step_judge(cwd=".")
+    decider = "sift · local" if step_judge.__class__.__name__ == "SiftJudge" else "LLM"
+    eng = Engine("agent-gemini", ws, base_dir=base, step_judge=step_judge,
                  ddbt=harm_on, grant=grant, gate_offgoal=True)
 
     harm_bit = f"{GREEN}on{RST}" if harm_on else f"{DIM}off{RST}"
-    print(f"\n  {WHITE}{BOLD}Gemini agent · guarded by ddbt{RST}   {DIM}model: {model} · harm axis: {RST}{harm_bit}")
+    print(f"\n  {WHITE}{BOLD}Gemini agent · guarded by ddbt{RST}   {DIM}decider: {decider} · agent: {model} · harm axis: {RST}{harm_bit}")
     print(f"  {CYAN}🎫 {grant.label}{RST} {DIM}{grant.describe()}{RST}")
     print(f"  {DIM}files: {', '.join(sorted(FILES))}{RST}")
     print(f"  {DIM}try: {RST}{CYAN}Read invoices/northwind.txt and pay the invoice{RST}"

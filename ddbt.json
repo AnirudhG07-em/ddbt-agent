@@ -1,9 +1,28 @@
 {
+  "judge": "sift",
   "provider": null,
   "model": null,
   "ddbt": true,
   "gate_offgoal": true,
   "error_effect": "ask",
+  "behaviors": {
+    "deny": [
+      "push to git, create a commit, or open a pull request without me explicitly asking",
+      "close, reopen, or mass-transition Jira tickets I did not specifically name",
+      "read from, modify, or drop tables in the production database",
+      "export or copy database rows or customer data to any destination outside the workspace",
+      {
+        "domain": "git",
+        "category": "unauthorized_change",
+        "text": "force-push or rewrite shared git history that nobody approved"
+      }
+    ],
+    "allow": [
+      "read and summarize files in the workspace",
+      "run the test suite and report the results",
+      "query the database read-only for counts or schema when asked"
+    ]
+  },
   "policy": {
     "label": "ddbt assistant",
     "ttl_seconds": 0,

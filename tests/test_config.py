@@ -74,19 +74,26 @@ def test_env_overrides_file(tmp_path, monkeypatch):
     assert config.model(tmp_path) == "gemini-x"
 
 
-def test_grant_spec_path_and_inline(tmp_path):
+def test_grant_spec_is_inline_policy_only(tmp_path):
+    # legacy "grant" key is no longer honoured; only the inline "policy" block is the ticket
     _write(tmp_path, {"grant": ".ddbt/grant.json"})
-    assert config.grant_spec(tmp_path) == ".ddbt/grant.json"
-    _write(tmp_path, {"grant": {"tools": ["Read"]}})
-    assert config.grant_spec(tmp_path) == {"tools": ["Read"]}
+    assert config.grant_spec(tmp_path) is None
+    _write(tmp_path, {"policy": {"tools": {"allow": ["Read"]}}})
+    assert config.grant_spec(tmp_path) == {"tools": {"allow": ["Read"]}}
 
 
-def test_hook_loads_inline_grant_from_ddbt_json(tmp_path):
+def test_behaviors_accessor(tmp_path):
+    _write(tmp_path, {"behaviors": {"deny": ["push to git unasked"], "allow": ["run tests"]}})
+    b = config.behaviors(tmp_path)
+    assert b["deny"] == ["push to git unasked"] and b["allow"] == ["run tests"]
+
+
+def test_hook_loads_inline_policy_from_ddbt_json(tmp_path):
     from ddbt.adapters.claude_code import hook
 
-    _write(tmp_path, {"grant": {"tools": ["Read"], "deny_paths": ["**/*.pem"]}})
+    _write(tmp_path, {"policy": {"tools": {"allow": ["Read"]}, "files": {"deny": ["**/*.pem"]}}})
     grant = hook._load_grant(str(tmp_path))
     assert grant is not None
-    # the inline grant is enforced: Bash is not in {Read}
+    # the inline policy is enforced: Bash is not in {Read}
     assert grant.check("Bash", {"command": "ls"}, now=0.0).effect == "deny"
     assert grant.check("Read", {"file_path": "a.txt"}, now=0.0).effect == "allow"

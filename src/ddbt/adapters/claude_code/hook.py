@@ -20,9 +20,8 @@ from ddbt.core.engine import Effect, Engine
 
 
 def _load_grant(cwd: str):
-    """The agent's capability ticket. From ddbt.json's inline "policy" (or the legacy "grant":
-    an object or a path), else <project>/.ddbt/grant.json, then ~/.ddbt/grant.json. Absent → no
-    ticket. Every shape loads through Grant.from_dict (nested and flat both accepted)."""
+    """The agent's capability ticket — the inline "policy" block in ddbt.json. Absent → no ticket.
+    Loads through Grant.from_dict (nested allow/deny schema)."""
     from ddbt.core import config
     from ddbt.core.grant import Grant
 
@@ -32,14 +31,6 @@ def _load_grant(cwd: str):
             return Grant.from_dict(spec, now=time.time())
         except (TypeError, ValueError, KeyError):
             return None
-    candidates = [Path(cwd) / spec] if isinstance(spec, str) and spec.strip() else []
-    candidates += [Path(cwd) / ".ddbt" / "grant.json", Path.home() / ".ddbt" / "grant.json"]
-    for p in candidates:
-        try:
-            if p.is_file():
-                return Grant.from_dict(json.loads(p.read_text()), now=time.time())
-        except (OSError, json.JSONDecodeError):
-            continue
     return None
 
 
@@ -52,7 +43,7 @@ def _engine(payload: dict) -> Engine:
 
     session_id = payload.get("session_id", "default")
     cwd = payload.get("cwd") or "."
-    return Engine(session_id, workspace_root=cwd, step_judge=make_step_judge(),
+    return Engine(session_id, workspace_root=cwd, step_judge=make_step_judge(cwd=cwd),
                   grant=_load_grant(cwd), **config.engine_kwargs(cwd))
 
 

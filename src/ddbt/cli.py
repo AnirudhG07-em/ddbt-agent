@@ -38,6 +38,8 @@ def _cmd_install(args: argparse.Namespace) -> int:
     if args.intent:
         print(f"✓ blind intent judge ENABLED (model: {args.intent_model})")
         print("  → ensure ANTHROPIC_API_KEY is set in the environment you launch Claude Code from.")
+    print("  Next: `ddbt prepare` (one-time) to build the local sift judge model.")
+    print("        Editing ddbt.json `behaviors` needs NO training; it applies on the next run.")
     print("  Restart Claude Code in this project for hooks to take effect.")
     return 0
 
@@ -93,6 +95,35 @@ def _cmd_audit(args: argparse.Namespace) -> int:
 
 def _cmd_hook(args: argparse.Namespace) -> int:
     return hook_adapter.dispatch(args.event, sys.stdin.read())
+
+
+def _cmd_prepare(args: argparse.Namespace) -> int:
+    """Train the non-LLM sift judge model (one-time). Workspace `behaviors` in ddbt.json need NO
+    training — this only builds the base malicious-classifier artifact the judge loads."""
+    import pathlib
+    import subprocess
+
+    # locate the sibling sift project (sift/train_sift.py)
+    here = pathlib.Path(__file__).resolve()
+    train = next((up / "sift" / "train_sift.py" for up in here.parents
+                  if (up / "sift" / "train_sift.py").is_file()), None)
+    if train is None:
+        print("✗ could not find sift/train_sift.py (is the sift/ project present?)")
+        return 1
+    print(f"→ training the sift judge model (encoder={args.encoder}) …")
+    print("  (workspace behaviors in ddbt.json need no training — this is the base model only)")
+    try:
+        rc = subprocess.call([sys.executable, str(train), "--encoder", args.encoder], cwd=str(train.parent))
+    except OSError as exc:
+        print(f"✗ failed to launch training: {exc}")
+        return 1
+    if rc != 0:
+        print("\n✗ training failed. If it's a missing dependency, reinstall the project deps:")
+        print("    uv pip install -e .      (numpy, scikit-learn, model2vec, joblib are core)")
+        return rc
+    print("✓ sift judge ready → sift/models/sift_judge.joblib")
+    print("  ddbt now decides with sift by default (set DDBT_JUDGE=llm or ddbt.json \"judge\":\"llm\" to use the LLM).")
+    return 0
 
 
 def _cmd_bench(args: argparse.Namespace) -> int:
@@ -202,6 +233,10 @@ def build_parser() -> argparse.ArgumentParser:
     a = sub.add_parser("audit", help="print a session's decision trail")
     a.add_argument("--session", required=True)
     a.set_defaults(fn=_cmd_audit)
+
+    prep = sub.add_parser("prepare", help="train the non-LLM sift judge model (one-time)")
+    prep.add_argument("--encoder", default="model2vec", choices=["model2vec", "minilm", "hashing"])
+    prep.set_defaults(fn=_cmd_prepare)
 
     h = sub.add_parser("hook", help="hook entrypoint (used by Claude Code)")
     h.add_argument("event")

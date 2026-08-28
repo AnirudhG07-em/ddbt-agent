@@ -278,7 +278,23 @@ uv run ddbt bench agentdojo --suite slack --limit 8
 | **MCPTox**                     | **484/485** poisoned tool descriptions caught (99.8%) | 0 of 8 benign flagged                                                                                                                                     |
 | **InjecAgent**                 | 1054/1054 attacks stopped, 1054 benign clean (100%)   | **a regression floor, not robustness** — see caveat                                                                                                       |
 
-This shows ????
+### The non-LLM decider (`sift`) — similar numbers, zero cost
+
+The default judge is now **`sift`**, a local embedding + structural model (see [`sift/`](sift/)) — no
+LLM, no API, no network. On the same benchmarks it lands within a point or two of the LLM judge, at
+**$0 and ~62 ms/query local**:
+
+| benchmark | sift (F1) | LLM judge (F1) |
+| --------- | --------- | -------------- |
+| **R-Judge** | 0.87 | 0.915 |
+| **InjecAgent** | 1.00 | 1.00 |
+| **MCPTox** | 1.00 | 0.998 |
+
+![sift vs LLM](sift/docs/sift_vs_llm.svg)
+
+InjecAgent and MCPTox reach parity; R-Judge trails by ~0.04 (the honest gap, closable with
+distillation). The LLM remains available as a flagged fallback (`DDBT_JUDGE=llm` or `ddbt.json`
+`"judge": "llm"`). Full method breakdown and charts: [`sift/README.md`](sift/README.md).
 
 ## Layout
 

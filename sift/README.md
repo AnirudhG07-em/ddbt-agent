@@ -71,6 +71,74 @@ Two data-quality corrections vs a naive run:
 Metrics report `specificity@f1thr` and `n_benign` alongside F1, so an imbalanced set can't hide a
 weak false-positive rate.
 
+## Results — sift (non-LLM) vs the LLM judge
+
+**The point: near-parity with the LLM, at $0 API cost and ~62 ms local.** Numbers are the
+`potion-base-32M` run; "sift" is the deployed `fusion` method. F1 on each benchmark's unsafe/attack class.
+
+![sift vs LLM](docs/sift_vs_llm.svg)
+
+| method | R-Judge F1 | InjecAgent | MCPTox | ~speed/query | cost | status |
+|---|---|---|---|---|---|---|
+| **fusion** | **0.87** | 1.00 | 1.00 | ~62 ms | **$0** | **deployed** |
+| model2vec_trained | 0.89 | 1.00 | 1.00 | ~35 ms | $0 | comparator |
+| static_linear | 0.88 | 1.00 | 0.99 | ~60 ms | $0 | comparator |
+| static_gbt | 0.87 | 1.00 | 1.00 | ~60 ms | $0 | comparator |
+| anomaly | 0.84 | 1.00 | 0.97 | ~60 ms | $0 | comparator |
+| setfit | 0.83 | ~1.00 | 0.99 | ~180 ms | $0 | experimental |
+| prototypes | 0.69 | 0.82 | 0.81 | ~60 ms | $0 | comparator |
+| **LLM judge** (ddbt) | **0.915** | **1.00** | **0.998** | ~hundreds ms | **API $ + network** | flagged fallback |
+
+![methods on R-Judge](docs/methods.svg)
+
+**What the methods are** (all ≤100 MB, none an SLM): `static_linear`/`static_gbt` put a linear or
+gradient-boosted head on a *frozen* potion-32M embedding; `prototypes` is zero-shot nearest-centroid
+cosine to the malicious catalog (interpretable, one-line-extensible); `anomaly` scores distance from
+the benign manifold (catches novel attacks); `model2vec_trained` fine-tunes the static embedding;
+`setfit` (experimental, dropped) is a contrastive MiniLM fine-tune — it only ties the others but is
+~3× slower to serve and minutes to train; **`fusion` (deployed)** concatenates the frozen embedding
+with the deterministic **structural/taint** features and learns a GBT over both — the ensemble the
+evasion literature recommends, and the one that keeps exfil detection exact even when the ML is fooled.
+On InjecAgent and MCPTox sift matches the LLM; on R-Judge it trails 0.87 vs 0.915 — the honest gap,
+closable with distillation. Charts regenerate via `python plot_results.py`.
+
+## Deployed model & ddbt integration
+
+**Chosen model: `fusion`** (frozen `potion-base-32M` + structural + GBT head). It trains fast (no
+embedding fine-tune — just encode + fit), carries the structural/provenance layer a judge needs, and
+is the most shift-robust. **SetFit is dropped** as a default — it needs a real fine-tune (~2.5 min/
+benchmark) and only *ties* fusion, never beats it; it stays an opt-in bake-off comparator (`--slow`).
+
+Train and save the deployable judge:
+```bash
+uv run --extra all python train_sift.py --encoder model2vec   # → models/sift_judge.joblib
+```
+ddbt then loads it as its **default decider** (LLM demoted to a flagged fallback via
+`ddbt.json` `"judge": "llm"` or `DDBT_JUDGE=llm`). `sift.serve.SiftScorer` keeps the encoder warm for
+fast per-call scoring; `ddbt/judge/sift_judge.py` maps a score to the engine's Verdict:
+- **DENY** ← trained malicious risk (exfil/secrets/harm) — universal, from `data/taxonomy.py`.
+- **ASK** ← a matched **workspace behavior** (a convention like "don't commit unasked" → confirm with a human, don't hard-block).
+- **ALLOW** ← low risk, no rule matched.
+
+## Workspace behaviors (`ddbt.json`)
+
+"Bad" is split: **universal malicious** patterns are hardcoded in `data/taxonomy.py`; everything
+**workspace-specific** lives in `ddbt.json` and needs no retraining:
+```jsonc
+"behaviors": {
+  "deny": [
+    "push to git or open a PR without me explicitly asking",   // natural language
+    {"domain": "database", "category": "exfiltration", "text": "export table rows off the workspace"}
+  ],
+  "allow": ["run the test suite and report results"]
+}
+```
+Each rule is matched by **salient keyword overlap** (≥2 shared content words) against the action's
+tool+args — reliable and interpretable (the trained model carries the fuzzy/paraphrase axis). Adding
+or editing a rule takes effect immediately. The deterministic allow/deny floor is the separate
+`policy` block; `behaviors` is the semantic layer. Caveat: a rule only matches words that actually
+appear in the tool call, so phrase it with terms the action uses (or use the taxonomy-dict form).
+
 ## Layout
 ```
 sift/

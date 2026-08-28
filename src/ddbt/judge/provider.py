@@ -98,8 +98,27 @@ def default_model(provider: str | None = None) -> str:
     return GEMINI_DEFAULT if provider == "gemini" else ANTHROPIC_DEFAULT
 
 
-def make_step_judge(model: str | None = None, **kwargs):
-    """Build the step-judge for the configured provider."""
+def active_judge(cwd=None) -> str:
+    """Which decider to use: "sift" (default, non-LLM) or "llm" (flagged fallback).
+    Order: DDBT_JUDGE env → ddbt.json "judge" → default "sift"."""
+    from ddbt.core import config
+    env = (os.environ.get("DDBT_JUDGE") or "").strip().lower()
+    if env in ("sift", "llm"):
+        return env
+    val = str(config.load(cwd).get("judge", "sift")).strip().lower()
+    return val if val in ("sift", "llm") else "sift"
+
+
+def make_step_judge(model: str | None = None, cwd=None, **kwargs):
+    """Build the step-judge. DEFAULT is the non-LLM sift judge; the LLM is a FLAGGED fallback
+    (DDBT_JUDGE=llm, or ddbt.json "judge": "llm"). If sift is selected but its model/deps are
+    missing, we fall back to the LLM so enforcement never silently drops."""
+    if active_judge(cwd) == "sift":
+        from ddbt.judge.sift_judge import SiftJudge
+        sift = SiftJudge.load(cwd=cwd)
+        if sift is not None:
+            return sift
+        # sift requested but unavailable → fall through to the LLM so the gate still works
     provider = active_provider()
     model = model or default_model(provider)
     if provider == "gemini":

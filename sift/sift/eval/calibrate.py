@@ -65,8 +65,12 @@ def conformal_bands(cal_scores: np.ndarray, cal_y: np.ndarray,
     benign = np.sort(cal_scores[cal_y == 0])
     if benign.size == 0:
         return Bands(0.5, 0.35)
-    # the (1 - target_fpr) quantile of benign scores bounds benign false positives at target_fpr
+    # the (1 - target_fpr) quantile of benign scores bounds benign false positives at target_fpr…
     q = np.clip(1.0 - target_fpr, 0.0, 1.0)
     tau_deny = float(np.quantile(benign, q))
-    tau_ask = float(max(0.0, tau_deny - ask_width))
+    # …but clamp to a usable operating range: on near-separable data the benign quantile collapses to
+    # ~0, which would DENY everything with any positive risk. Floor at 0.5 (a real probability
+    # midpoint), cap at 0.95 so a confident detection always denies.
+    tau_deny = float(min(max(tau_deny, 0.5), 0.95))
+    tau_ask = float(min(max(tau_deny - ask_width, 0.2), tau_deny))
     return Bands(tau_deny, tau_ask)

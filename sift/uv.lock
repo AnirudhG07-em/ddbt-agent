@@ -490,29 +490,6 @@ wheels = [
 ]
 
 [[package]]
-name = "evaluate"
-version = "0.4.6"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "datasets" },
-    { name = "dill" },
-    { name = "fsspec", extra = ["http"] },
-    { name = "huggingface-hub" },
-    { name = "multiprocess" },
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
-    { name = "numpy", version = "2.5.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-    { name = "packaging" },
-    { name = "pandas" },
-    { name = "requests" },
-    { name = "tqdm" },
-    { name = "xxhash" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/ad/d0/0c17a8e6e8dc7245f22dea860557c32bae50fc4d287ae030cb0e8ab8720f/evaluate-0.4.6.tar.gz", hash = "sha256:e07036ca12b3c24331f83ab787f21cc2dbf3631813a1631e63e40897c69a3f21", size = 65716, upload-time = "2025-09-18T13:06:30.581Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/3e/af/3e990d8d4002bbc9342adb4facd59506e653da93b2417de0fa6027cb86b1/evaluate-0.4.6-py3-none-any.whl", hash = "sha256:bca85bc294f338377b7ac2f861e21c308b11b2a285f510d7d5394d5df437db29", size = 84069, upload-time = "2025-09-18T13:06:29.265Z" },
-]
-
-[[package]]
 name = "filelock"
 version = "3.32.4"
 source = { registry = "https://pypi.org/simple" }
@@ -2052,30 +2029,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/04/fe/9d19b01fe87945f9455c617bf5d33dfbf29fe06ab6580bc0bea06080c788/sentence_transformers-6.0.0-py3-none-any.whl", hash = "sha256:b974ac67523ea2a955afa87b1024129305472bd884367dcc969261cb086790e9", size = 739640, upload-time = "2026-08-18T13:33:48.428Z" },
 ]
 
-[package.optional-dependencies]
-train = [
-    { name = "accelerate" },
-    { name = "datasets" },
-]
-
-[[package]]
-name = "setfit"
-version = "1.1.3"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "datasets" },
-    { name = "evaluate" },
-    { name = "huggingface-hub" },
-    { name = "packaging" },
-    { name = "scikit-learn" },
-    { name = "sentence-transformers", extra = ["train"] },
-    { name = "transformers" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/ac/f5/5dbca5ff076524daccf6a63062f8903d97c0c56c4a631f17730ae5723b1f/setfit-1.1.3.tar.gz", hash = "sha256:db54a7b6e86118343275cc70c39749f71e10aa226fef510543bcd7c8b00b9f19", size = 84459, upload-time = "2025-08-05T13:22:38.727Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/7d/14/2e284bdb5e51052246235cc1e95658ea11855b99ca738492e06f7ec8512a/setfit-1.1.3-py3-none-any.whl", hash = "sha256:18affb2936cf4158885c49a1a828f4225f8d96b28224c13193ab268ab35ef76a", size = 75597, upload-time = "2025-08-05T13:22:37.421Z" },
-]
-
 [[package]]
 name = "setuptools"
 version = "84.0.0"
@@ -2106,25 +2059,24 @@ dependencies = [
 
 [package.optional-dependencies]
 all = [
+    { name = "accelerate" },
     { name = "datasets" },
     { name = "model2vec", extra = ["train"] },
     { name = "sentence-transformers" },
-    { name = "setfit" },
 ]
 embed = [
     { name = "model2vec" },
     { name = "sentence-transformers" },
 ]
 finetune = [
-    { name = "datasets" },
     { name = "model2vec", extra = ["train"] },
-    { name = "setfit" },
+    { name = "sentence-transformers" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "accelerate", marker = "extra == 'all'", specifier = ">=1.1" },
     { name = "datasets", marker = "extra == 'all'", specifier = ">=2.19" },
-    { name = "datasets", marker = "extra == 'finetune'", specifier = ">=2.19" },
     { name = "model2vec", marker = "extra == 'embed'", specifier = ">=0.3" },
     { name = "model2vec", extras = ["train"], marker = "extra == 'all'", specifier = ">=0.3" },
     { name = "model2vec", extras = ["train"], marker = "extra == 'finetune'", specifier = ">=0.3" },
@@ -2132,8 +2084,7 @@ requires-dist = [
     { name = "scikit-learn", specifier = ">=1.4" },
     { name = "sentence-transformers", marker = "extra == 'all'", specifier = ">=3.0" },
     { name = "sentence-transformers", marker = "extra == 'embed'", specifier = ">=3.0" },
-    { name = "setfit", marker = "extra == 'all'", specifier = ">=1.1" },
-    { name = "setfit", marker = "extra == 'finetune'", specifier = ">=1.1" },
+    { name = "sentence-transformers", marker = "extra == 'finetune'", specifier = ">=3.0" },
 ]
 provides-extras = ["embed", "finetune", "all"]
 

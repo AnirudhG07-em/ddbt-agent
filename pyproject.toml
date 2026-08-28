@@ -6,8 +6,16 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "Anirudh Gupta" }]
-# anthropic is core: the v4 decider IS the LLM step-judge (see ARCHITECTURE.md)
-dependencies = ["anthropic>=0.40"]
+# Core = the DEFAULT sift decider's runtime (torch-free: model2vec inference is numpy+safetensors)
+# plus anthropic for the flagged LLM fallback. So `ddbt`, the hook, and the demos all run sift with
+# no extra install. `ddbt prepare` builds the model; editing ddbt.json `behaviors` needs no training.
+dependencies = [
+    "numpy>=1.26",
+    "scikit-learn>=1.4",
+    "model2vec>=0.3",
+    "joblib>=1.3",
+    "anthropic>=0.40",   # flagged LLM fallback (DDBT_JUDGE=llm)
+]
 
 [project.optional-dependencies]
 mcp = ["mcp>=1.2"]

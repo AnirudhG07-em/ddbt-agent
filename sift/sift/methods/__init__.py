@@ -1,19 +1,19 @@
-"""Registry of every bake-off method. `build_all(encoder)` returns fresh instances."""
+"""Registry of every bake-off method. `build_all(encoder)` returns fresh instances.
+
+The deployed method is `fusion`. The rest are active comparators. SetFit is non-deployed and lives in
+`experimental/`; it is imported LAZILY only when `include_slow=True`, so importing this package never
+depends on `experimental/` being on the path (keeps artifact loading in the ddbt env robust)."""
 
 from __future__ import annotations
 
 from sift.methods.embed_heads import StaticLinear, StaticGBT, Prototypes, Anomaly
-from sift.methods.finetuned import SetFitMethod, Model2VecTrained
+from sift.methods.finetuned import Model2VecTrained
 from sift.methods.fusion import Fusion
 
 
 def build_all(encoder: str = "model2vec", include_slow: bool = False) -> list:
-    """The methods in report order. Heavy ones self-skip via .available().
-
-    `include_slow=False` (default) EXCLUDES SetFit: it does a full MiniLM contrastive fine-tune per
-    benchmark on CPU, which is minutes-to-stall slow and redundant with model2vec_trained (which
-    also fine-tunes an embedding and scores higher here). Pass --slow / include_slow=True to add it.
-    """
+    """Deployed + comparator methods, in report order. `include_slow=True` adds the experimental
+    SetFit (slow CPU fine-tune, non-deployed, lives in experimental/)."""
     methods = [
         StaticLinear(encoder),
         StaticGBT(encoder),
@@ -23,9 +23,12 @@ def build_all(encoder: str = "model2vec", include_slow: bool = False) -> list:
         Fusion(encoder),
     ]
     if include_slow:
-        methods.insert(4, SetFitMethod())
+        try:
+            from experimental.setfit_method import SetFitMethod
+            methods.insert(4, SetFitMethod())
+        except Exception:
+            pass  # experimental/ not importable → skip the comparator, never break the run
     return methods
 
 
-__all__ = ["build_all", "StaticLinear", "StaticGBT", "Prototypes", "Anomaly",
-           "SetFitMethod", "Model2VecTrained", "Fusion"]
+__all__ = ["build_all", "StaticLinear", "StaticGBT", "Prototypes", "Anomaly", "Model2VecTrained", "Fusion"]

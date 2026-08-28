@@ -105,12 +105,19 @@ class StubScanner:
                            f"contains an instruction/target ({hit!r})" if hit else "no orders — descriptive only")
 
 
-def build():
+def build(use_llm: bool = False):
+    """Default decider is sift (local, no LLM, no key). --llm forces the LLM judge (needs a key).
+    Falls back to an offline stub only if the LLM is requested but no key/model is available."""
+    from ddbt.judge.provider import describe, make_desc_scanner, make_step_judge
+    if use_llm:
+        os.environ["DDBT_JUDGE"] = "llm"
+    judge = make_step_judge(cwd=".")
+    if judge.__class__.__name__ == "SiftJudge":
+        return judge, StubScanner(), "sift · local, no LLM", True
     has_key = any(os.environ.get(k) for k in ("ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"))
     if has_key:
-        from ddbt.judge.provider import describe, make_desc_scanner, make_step_judge
-        return make_step_judge(), make_desc_scanner(), describe(), True
-    return StubJudge(), StubScanner(), "offline stub (set GEMINI_API_KEY for a real model)", False
+        return judge, make_desc_scanner(), "LLM · " + describe(), True
+    return StubJudge(), StubScanner(), "offline stub (run `ddbt prepare` for the local judge, or set a key for --llm)", False
 
 
 # ---------------------------------------------------------------- render
@@ -207,7 +214,11 @@ def parse_args(rest):
 
 
 def main():
-    judge, scanner, model, live = build()
+    import argparse
+    ap = argparse.ArgumentParser(description="ddbt live chat — sift decider by default")
+    ap.add_argument("--llm", action="store_true", help="use the LLM judge instead of the local sift judge")
+    a = ap.parse_args()
+    judge, scanner, model, live = build(use_llm=a.llm)
     grant = Grant.from_dict(TICKET, now=time.time())
     base, ws = tempfile.mkdtemp(), tempfile.mkdtemp()
     eng = Engine("chat-live", ws, base_dir=base, step_judge=judge, ddbt=True, grant=grant)

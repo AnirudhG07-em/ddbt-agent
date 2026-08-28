@@ -28,13 +28,14 @@ FILENAME = "ddbt.json"
 # a project with an external .ddbt/grant.json (legacy) still resolves; `install` writes an inline
 # policy into ddbt.json (TEMPLATE below) so the common case is genuinely one file.
 DEFAULTS = {
+    "judge": "sift",           # decider: "sift" (default, non-LLM) or "llm" (flagged fallback)
     "provider": None,          # None → auto-detect from keys (see judge/provider.py)
     "model": None,             # None → the provider's default model
     "ddbt": True,              # axis 2 (harm/ethics)
     "gate_offgoal": True,      # benign off-goal step → ask a human, not a hard deny
     "error_effect": "ask",     # judge infra failure → "ask" (human) or "deny" (fail-closed)
-    "policy": None,            # inline capability ticket (see below); None → fall back to `grant`
-    "grant": ".ddbt/grant.json",  # legacy: path to an external grant file, used only if no `policy`
+    "policy": None,            # inline capability ticket (the deterministic allow/deny floor)
+    "behaviors": {},           # workspace semantic rules for the sift judge (NL or taxonomy) — no retrain
     "auth": {},                # the agent's own scoped credentials (scaffolding; doc/credentials.md)
 }
 
@@ -43,11 +44,31 @@ DEFAULTS = {
 # per resource — extend it by adding to a list or adding a new resource key. Secrets in `auth` are
 # referenced by ENV-VAR NAME or file path — never inlined — so a committed ddbt.json leaks nothing.
 TEMPLATE = {
+    "judge": "sift",
     "provider": None,
     "model": None,
     "ddbt": True,
     "gate_offgoal": True,
     "error_effect": "ask",
+
+    # Workspace SEMANTIC rules for the sift judge — natural language OR taxonomy dicts. Unlike the
+    # deterministic `policy` above, these are judged by similarity (no retrain: they're embedded and
+    # compared live). "deny" raises risk on matching actions; "allow" lowers it (known-good).
+    "behaviors": {
+        "deny": [
+            "push to git, create a commit, or open a pull request without me explicitly asking",
+            "close, reopen, or mass-transition Jira tickets I did not specifically name",
+            "read from, modify, or drop tables in the production database",
+            "export or copy database rows or customer data to any destination outside the workspace",
+            {"domain": "git", "category": "unauthorized_change",
+             "text": "force-push or rewrite shared git history that nobody approved"},
+        ],
+        "allow": [
+            "read and summarize files in the workspace",
+            "run the test suite and report the results",
+            "query the database read-only for counts or schema when asked",
+        ],
+    },
 
     "policy": {
         "label": "ddbt assistant",
@@ -160,16 +181,19 @@ def engine_kwargs(cwd: str | Path | None = None) -> dict:
     }
 
 
+def behaviors(cwd: str | Path | None = None) -> dict:
+    """Workspace semantic rules for the sift judge: {"deny": [...], "allow": [...]}, where each item
+    is a natural-language string or a taxonomy dict {domain, category, text}. Consumed by sift, not
+    the deterministic grant. Empty {} → sift uses only its built-in catalog."""
+    b = load(cwd).get("behaviors")
+    return b if isinstance(b, dict) else {}
+
+
 def grant_spec(cwd: str | Path | None = None):
-    """The capability ticket as configured. Preference order:
-      1. inline ``policy`` object (the one-file default) → returned as a dict
-      2. legacy ``grant``: an inline dict, or a path string (relative to the project)
-    The hook resolves a path relative to the project root; either dict shape loads via
-    Grant.from_dict. Returns None when nothing is configured (no ticket)."""
-    c = load(cwd)
-    if isinstance(c.get("policy"), dict):
-        return c["policy"]
-    return c.get("grant")
+    """The capability ticket: the inline ``policy`` object in ddbt.json, loaded via
+    Grant.from_dict. Returns None when no policy is configured (no ticket)."""
+    p = load(cwd).get("policy")
+    return p if isinstance(p, dict) else None
 
 
 def auth(cwd: str | Path | None = None) -> dict:
