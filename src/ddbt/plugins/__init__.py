@@ -14,6 +14,7 @@ import inspect
 from ddbt.plugins.base import Plugin, PluginContext, PluginManager, PreVerdict
 from ddbt.plugins.dataflow_taint import DataflowTaint
 from ddbt.plugins.destructive_guard import DestructiveGuard
+from ddbt.plugins.mitre_guard import MitreGuard
 from ddbt.plugins.pii_dlp import PiiDlp
 from ddbt.plugins.shell_deobfuscation import ShellDeobfuscation
 
@@ -21,6 +22,7 @@ REGISTRY = {
     "shell_deobfuscation": ShellDeobfuscation,
     "dataflow_taint": DataflowTaint,
     "destructive_guard": DestructiveGuard,
+    "mitre_guard": MitreGuard,
     "pii_dlp": PiiDlp,
 }
 

@@ -26,7 +26,8 @@
   "plugins": [
     "shell_deobfuscation",
     "dataflow_taint",
-    "destructive_guard"
+    "destructive_guard",
+    "mitre_guard"
   ],
   "policy": {
     "label": "ddbt assistant",

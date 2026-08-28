@@ -1,0 +1,16 @@
+=== ddbt safety benchmarks · decider=SiftJudge · plugins=['shell_deobfuscation', 'dataflow_taint', 'destructive_guard'] ===
+
+  injecagent       attacks= 125 stopped=100.0%  benign= 125 clean=83.2%  (12s)
+  agenttrust       attacks=  16 stopped=75.0%  benign=   8 clean=87.5%  (1s)
+  toolemu          attacks= 125 stopped=51.2%  benign= 125 clean=60.8%  (15s)
+  agentsafetybench attacks= 140 stopped=33.6%  benign= 110 clean=72.7%  (12s)
+
+=== summary ===
+dataset          method                  attacks   stopped  benign   clean
+injecagent       replay                      125   100.0%     125  83.2%
+agenttrust       replay(reconstructed)        16    75.0%       8  87.5%
+toolemu          sift-scorer                 125    51.2%     125  60.8%
+agentsafetybench sift-scorer                 140    33.6%     110  72.7%
+
+replay = real tool calls (the true fit); proxy = recognition of prose risk on an emulation
+benchmark (lower bound — the official eval needs a full agent-in-the-loop).

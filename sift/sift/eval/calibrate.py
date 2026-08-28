@@ -33,15 +33,15 @@ class Calibrator:
 
 
 def fit_calibrator(scores: np.ndarray, y: np.ndarray) -> Calibrator:
+    """Platt (sigmoid) by default. Isotonic was collapsing to ~0/1 on near-separable training scores,
+    which destroys thresholding on out-of-distribution inputs (a 0.99 threshold still admitting
+    everything). Platt is a smooth 2-parameter map that keeps scores spread; pass a diverse (overlapping)
+    calibration set for the spread to be meaningful."""
     n = len(scores)
     if n < 30 or y.sum() == 0 or y.sum() == n:
         return Calibrator("identity", None)
-    if n >= 200:
-        from sklearn.isotonic import IsotonicRegression
-        m = IsotonicRegression(out_of_bounds="clip").fit(scores, y)
-        return Calibrator("isotonic", m)
     from sklearn.linear_model import LogisticRegression
-    m = LogisticRegression(max_iter=1000).fit(scores.reshape(-1, 1), y)
+    m = LogisticRegression(max_iter=1000, C=1.0).fit(scores.reshape(-1, 1), y)
     return Calibrator("platt", m)
 
 

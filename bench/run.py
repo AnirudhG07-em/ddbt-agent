@@ -26,7 +26,7 @@ from ddbt.core.engine import Effect, Engine  # noqa: E402
 from ddbt.judge.provider import make_step_judge  # noqa: E402
 from ddbt.plugins import from_config as plugins_from_config  # noqa: E402
 
-DEFAULT_PLUGINS = ["shell_deobfuscation", "dataflow_taint", "destructive_guard"]
+DEFAULT_PLUGINS = ["shell_deobfuscation", "dataflow_taint", "destructive_guard", "mitre_guard"]
 
 # how each dataset is adapted — honest labelling in the table.
 #   replay      = real ground-truth tool calls run through the engine (the true fit, faithful LLM-free).

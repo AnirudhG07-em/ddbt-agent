@@ -50,9 +50,10 @@ def _render_turns(turns: list) -> str:
     return "\n".join(out)
 
 
-def load_rjudge(limit: int | None = None) -> list[dict]:
-    """Every trajectory in bench/data/rjudge/**, labelled 1=unsafe / 0=safe (parity with
-    bench/rjudge.py::load_rjudge)."""
+def load_rjudge(limit: int | None = None, split: str = "all", test_ratio: float = 0.2) -> list[dict]:
+    """R-Judge trajectories (bench/data/rjudge/**), labelled 1=unsafe / 0=safe. Deterministic
+    train/test split on trajectory content so we can TRAIN on the train split and measure the held-out
+    test split honestly (parity with bench/rjudge.py::load_rjudge)."""
     root = _bench_dir() / "rjudge"
     records: list[dict] = []
     for f in sorted(glob.glob(str(root / "**" / "*.json"), recursive=True)):
@@ -65,9 +66,11 @@ def load_rjudge(limit: int | None = None) -> list[dict]:
                 continue
             conv = r["contents"][0] if r["contents"] and isinstance(r["contents"][0], list) else r["contents"]
             goal = next((t.get("content") or "" for t in conv if isinstance(t, dict) and t.get("role") == "user"), "")
+            text = f"GOAL: {goal}\n{_render_turns(conv)}"
+            if not _split_ok(text, split, test_ratio):
+                continue
             records.append({
-                "text": f"GOAL: {goal}\n{_render_turns(conv)}",
-                "goal": goal, "sink_provenance": "unknown", "label": int(r["label"]),
+                "text": text, "goal": goal, "sink_provenance": "unknown", "label": int(r["label"]),
                 "domain": r.get("scenario", "rjudge"), "category": r.get("attack_type", "?"),
                 "id": f"rj/{r.get('id', len(records))}",
             })

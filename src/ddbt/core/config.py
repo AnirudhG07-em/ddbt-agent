@@ -73,7 +73,7 @@ TEMPLATE = {
 
     # pluggable defenses, on by default (all deterministic + light). Remove any you don't want, or
     # add "pii_dlp" (Presidio-backed egress PII check). See src/ddbt/plugins/.
-    "plugins": ["shell_deobfuscation", "dataflow_taint", "destructive_guard"],
+    "plugins": ["shell_deobfuscation", "dataflow_taint", "destructive_guard", "mitre_guard"],
 
     "policy": {
         "label": "ddbt assistant",

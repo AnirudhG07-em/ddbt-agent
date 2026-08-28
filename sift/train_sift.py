@@ -42,6 +42,16 @@ def _load_training_records():
             used.append(name)
         except (FileNotFoundError, OSError):
             pass  # data not in this checkout → skip
+    # R-Judge TRAIN split — a broad, human-labelled safety set (many scenarios), so the model sees
+    # diverse trajectories and its scores spread (fixing the calibration collapse). The held-out TEST
+    # split is never trained on; measure it with the R-Judge check.
+    try:
+        rj = benches.load_rjudge(split="train")
+        if rj:
+            records += rj
+            used.append(f"rjudge_train({len(rj)})")
+    except (FileNotFoundError, OSError):
+        pass
     # NOTE: training on ToolEmu / Agent-SafetyBench was TESTED and DISABLED. Their safe/unsafe line is
     # too subtle for a static embedding — folding them in drives the model to flag EVERYTHING in those
     # domains (held-out recall 100% / specificity 0%; see eval_general.py). Those are agent-behaviour

@@ -1,0 +1,40 @@
+{
+  "decider": "SiftJudge",
+  "results": {
+    "rjudge": {
+      "n": 120,
+      "f1": 0.87,
+      "precision": 0.822,
+      "recall": 0.923,
+      "auroc": 0.902
+    },
+    "injecagent": {
+      "attacks": 75,
+      "stopped": 1.0,
+      "benign": 75,
+      "clean": 0.827,
+      "method": "replay"
+    },
+    "agenttrust": {
+      "attacks": 16,
+      "stopped": 0.875,
+      "benign": 8,
+      "clean": 0.875,
+      "method": "replay(reconstructed)"
+    },
+    "toolemu": {
+      "attacks": 75,
+      "stopped": 0.48,
+      "benign": 75,
+      "clean": 0.587,
+      "method": "sift-scorer"
+    },
+    "agentsafetybench": {
+      "attacks": 114,
+      "stopped": 0.377,
+      "benign": 36,
+      "clean": 0.472,
+      "method": "sift-scorer"
+    }
+  }
+}
