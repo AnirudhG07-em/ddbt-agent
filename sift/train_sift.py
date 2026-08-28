@@ -31,6 +31,8 @@ from sift.methods.fusion import Fusion
 
 
 def _load_training_records():
+    from sift.data import domains
+
     train_r, _, _ = synth.build(seed=0)
     records = list(train_r)
     used = ["synth"]
@@ -40,13 +42,26 @@ def _load_training_records():
             used.append(name)
         except (FileNotFoundError, OSError):
             pass  # data not in this checkout → skip
+    # NOTE: training on ToolEmu / Agent-SafetyBench was TESTED and DISABLED. Their safe/unsafe line is
+    # too subtle for a static embedding — folding them in drives the model to flag EVERYTHING in those
+    # domains (held-out recall 100% / specificity 0%; see eval_general.py). Those are agent-behaviour
+    # sets scored by an LLM; a non-LLM embedding can't reproduce that judgment. The loaders remain in
+    # sift.data.benches for experimentation. To try anyway (e.g. with a stronger encoder), re-enable:
+    #     records += benches.load_toolemu_labeled(split="train")
+    #     records += benches.load_agentsafetybench_labeled(split="train")
+
+    # optional workspace domain packs (extensible; empty by default) — sift/data/domains/*.jsonl
+    dom = domains.load(split="train")
+    if dom:
+        records += dom
+        used += [f"domain:{d}" for d in domains.domains()]
     return records, used
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--encoder", default="model2vec", choices=["model2vec", "minilm", "hashing"])
-    ap.add_argument("--out", default="models/sift_judge.joblib")
+    ap.add_argument("--out", default=str(Path(__file__).resolve().parent / "models" / "sift_judge.joblib"))
     ap.add_argument("--target-fpr", type=float, default=0.05)
     args = ap.parse_args(argv)
 

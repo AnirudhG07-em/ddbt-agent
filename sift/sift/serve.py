@@ -18,6 +18,7 @@ from pathlib import Path
 import numpy as np
 
 from sift.data import behaviors as _behaviors
+from sift.data import mitre as _mitre
 from sift.data.dataset import to_dataset
 from sift.features import structural
 from sift.features.text import decode_and_normalise, _flatten
@@ -144,14 +145,20 @@ class SiftScorer:
             decision = _more_severe(decision, "ASK")
 
         st = structural.Structural(*ds.struct[0].tolist())
-        reason = f"sift risk={risk:.2f}"
-        if matched:
-            reason += f" · asks: workspace rule “{matched.removeprefix('ARGS: ')[:70]}”"
-        elif self.protos is not None:
-            try:
-                dom, cat = self.protos.explain(ds)[0]
-                reason += f" · nearest: {dom}/{cat}"
-            except Exception:
-                pass
+        # output speaks MITRE ATT&CK, but ONLY when something is flagged — a clean ALLOW must not be
+        # labelled with the nearest bad tactic (nearest-centroid always returns *some* bad category).
+        if decision == "ALLOW" and not matched:
+            reason = f"clean · risk={risk:.2f}"
+        elif matched:
+            reason = (f"workspace deny-rule · risk={risk:.2f} · "
+                      f"matches “{matched.removeprefix('ARGS: ')[:60]}”")
+        else:  # ASK / DENY → name the tactic
+            cat = ""
+            if self.protos is not None:
+                try:
+                    _dom, cat = self.protos.explain(ds)[0]
+                except Exception:
+                    cat = ""
+            reason = f"{_mitre.describe(cat, decision)} · risk={risk:.2f}"
         return SiftScore(risk=risk, model_risk=model_risk, decision=decision,
                          struct=st, reason=reason, matched_behavior=matched)

@@ -30,8 +30,8 @@ _DESTRUCTIVE = re.compile(
 # content that shouldn't leave: secrets + bulk PII
 _SENSITIVE = re.compile(
     r"(BEGIN [A-Z ]*PRIVATE KEY|AKIA[0-9A-Z]{16}|sk-[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]+|"
-    r"password|passwd|secret|api[_-]?key|token|credential|\.env|id_rsa|customer|ssn|"
-    r"\b\d{3}-\d{2}-\d{4}\b|\b\d{16}\b)", re.I)
+    r"password|passwd|secret|api[_-]?key|token|credential|\.env|id_rsa|customer|ssn|social security|"
+    r"credit card|card number|cvv|bank account|patient|medical record|\b\d{3}-\d{2}-\d{4}\b|\b\d{16}\b)", re.I)
 # social-engineering / evasion framing (a genuinely textual signal, kept lexical here)
 _SECRECY = re.compile(
     r"\b(don'?t tell|do not tell|without (telling|informing)|keep (this |it )?(secret|quiet|"
@@ -41,10 +41,20 @@ _SECRECY = re.compile(
 _EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@([A-Za-z0-9.-]+\.[A-Za-z]{2,})")
 _URL = re.compile(r"https?://([^/\s:'\"]+)")
 
+# BULK scope: "all / every / entire / each / whole / *" — the quantifier that separates a mass
+# operation ("delete ALL rows", "export the WHOLE table") from a scoped one. Deterministic, and it's
+# what a static embedding blurs — so it's exactly the kind of signal that belongs in the structural
+# layer, not the model. Generalises across domains (db/files/email/cloud), no SQL parsing.
+_BULK = re.compile(r"\b(all|every|each|entire|whole|everything|globally)\b|\*|1\s*=\s*1", re.I)
+# scoping qualifiers that make an action targeted, not bulk — suppress the bulk flag when present
+_SCOPED = re.compile(r"\b(the one|a single|single|specific|by (its )?id|where id|one record|one row|"
+                     r"the row I|the one I|that I (named|asked|mentioned)|older than|expired)\b", re.I)
+
 # order fixes the column layout used by every downstream method
 FEATURE_NAMES = [
     "is_egress", "is_destructive", "payload_sensitive", "secrecy_framing",
     "has_external_dest", "sink_from_tool_output", "sink_unknown", "high_impact", "arg_scale",
+    "bulk_scope",
 ]
 
 
@@ -59,6 +69,7 @@ class Structural:
     sink_unknown: float = 0.0
     high_impact: float = 0.0
     arg_scale: float = 0.0
+    bulk_scope: float = 0.0
 
     def vector(self) -> np.ndarray:
         d = asdict(self)
@@ -82,6 +93,7 @@ def extract(tool: str, args_text: str, *, sink_provenance: str = "unknown",
     dests = _EMAIL.findall(args_text) + _URL.findall(args_text)
     external = any(not any(d.endswith(td) for td in trusted_domains) for d in dests) if dests else False
     is_egress = bool(_EGRESS.search(blob)) or bool(dests)
+    bulk = bool(_BULK.search(args_text)) and not _SCOPED.search(args_text)
     return Structural(
         is_egress=float(is_egress),
         is_destructive=float(bool(_DESTRUCTIVE.search(blob))),
@@ -92,7 +104,16 @@ def extract(tool: str, args_text: str, *, sink_provenance: str = "unknown",
         sink_unknown=float(sink_provenance == "unknown"),
         high_impact=float(is_egress or bool(_DESTRUCTIVE.search(blob))),
         arg_scale=_arg_scale(args_text),
+        bulk_scope=float(bulk),
     )
+
+
+def bulk_harm_rule(s: Structural) -> bool:
+    """Deterministic 'malicious bulk data operation' — the general shape of a bad DB/data action, by
+    INTENT not SQL: an operation over ALL/EVERY records that destroys, sends out, or touches sensitive
+    data. Static embeddings blur 'delete all' vs 'delete the one I asked'; this rule doesn't. Fires
+    only on the bulk quantifier (not scoped ops), so 'update the row I asked' stays clean."""
+    return bool(s.bulk_scope and (s.is_destructive or s.is_egress or s.payload_sensitive))
 
 
 def hard_exfil_rule(s: Structural) -> bool:

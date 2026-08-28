@@ -55,42 +55,41 @@ def load_agenttrust() -> list:
 
 
 def load_toolemu() -> list:
-    """ToolEmu cases (assets/all_cases.json). Scenario-based; we extract the ground-truth risky
-    tool call when present, else skip the case. Best-effort adapter."""
+    """ToolEmu (assets/all_cases.json, 144 cases). ToolEmu is an EMULATION benchmark — its risk lives
+    in prose (`Potential Risky Actions`), not replayable tool calls. RECOGNITION-PROXY adapter: render
+    each described risky action as an attempted tool call (attack) and each expected-correct action as
+    a benign call, and measure whether ddbt flags the risky one while passing the benign one. This
+    tests recognition, not the full agent-in-the-loop eval."""
     p = DATA / "toolemu" / "all_cases.json"
     if not p.is_file():
         return []
-    rows = _load_list(p)
     cases = []
-    for i, r in enumerate(rows):
-        goal = r.get("User Instruction") or r.get("input") or "complete the task"
-        # ToolEmu marks risky outcomes but not always a single replayable call; take the first
-        # expected risky action if the schema exposes one.
-        risky = r.get("risky_actions") or r.get("expected_risky_tool_calls")
-        if not risky:
-            continue
-        call = risky[0]
-        tool = call.get("tool") or call.get("name") or "Bash"
-        args = call.get("arguments") or call.get("args") or {}
-        cases.append(Case(id=f"te/{i}", goal=goal, calls=[(tool, args)], label="attack", tainted=True,
-                          taint_text=json.dumps(call)[:400]))
+    for i, r in enumerate(_load_list(p)):
+        goal = r.get("User Instruction", "complete the task")
+        tool = (r.get("Toolkits") or ["tool"])[0]
+        for risky in (r.get("Potential Risky Actions") or [])[:1]:
+            cases.append(Case(id=f"te/{i}/risky", goal=goal, calls=[(tool, {"action": risky})], label="attack"))
+        for good in (r.get("Expected Achievements") or [])[-1:]:
+            cases.append(Case(id=f"te/{i}/ok", goal=goal, calls=[(tool, {"action": good})], label="benign"))
     return cases
 
 
-def load_agentsafetybench() -> list:
-    """Agent-SafetyBench scenarios. Best-effort: replay a ground-truth unsafe tool call if present."""
+def load_agentsafetybench(limit: int = 600) -> list:
+    """Agent-SafetyBench (released_data.json, 2000 records). Also emulation-based; risk lives in the
+    unsafe `instruction` + `fulfillable` label (0 = the agent should refuse, 1 = fine). RECOGNITION-
+    PROXY adapter: render the instruction as the agent's intended action and check whether ddbt flags
+    the unfulfillable (unsafe) ones while passing the fulfillable ones. Capped at `limit` for runtime."""
     p = _first_json(DATA / "agentsafetybench")
     if not p:
         return []
-    rows = _load_list(p)
     cases = []
-    for i, r in enumerate(rows):
-        calls = r.get("unsafe_tool_calls") or r.get("risky_actions")
-        if not calls:
+    for i, r in enumerate(_load_list(p)[:limit]):
+        instr = r.get("instruction", "")
+        if not instr:
             continue
-        c = calls[0]
-        cases.append(Case(id=f"asb/{i}", goal=r.get("instruction", "complete the task"),
-                          calls=[(c.get("tool", "Bash"), c.get("args", {}))], label="attack"))
+        label = "attack" if int(r.get("fulfillable", 1)) == 0 else "benign"
+        cases.append(Case(id=f"asb/{i}", goal="assist the user with their request",
+                          calls=[("agent_action", {"instruction": instr})], label=label))
     return cases
 
 

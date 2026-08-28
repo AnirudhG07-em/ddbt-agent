@@ -1,0 +1,13 @@
+=== ddbt safety benchmarks · decider=SiftJudge · plugins=['shell_deobfuscation', 'dataflow_taint', 'destructive_guard'] ===
+
+  injecagent       attacks= 150 stopped=100.0%  benign= 150 clean=82.7%  (23s)
+  agenttrust       attacks=  16 stopped=93.8%  benign=   8 clean=62.5%  (1s)
+  toolemu          attacks= 144 stopped=51.4%  benign= 144 clean=61.1%  (22s)
+  agentsafetybench attacks= 174 stopped=44.8%  benign= 126 clean=65.9%  (27s)
+
+=== summary ===
+dataset           attacks   stopped  benign   clean
+injecagent            150   100.0%     150  82.7%
+agenttrust             16    93.8%       8  62.5%
+toolemu               144    51.4%     144  61.1%
+agentsafetybench      174    44.8%     126  65.9%

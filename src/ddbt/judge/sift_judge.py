@@ -27,7 +27,14 @@ from dataclasses import dataclass
 
 from ddbt.judge.step_judge import StepFacts, Verdict
 
-_INJECTION_MARKERS = ("injection", "inject", "untrusted", "quarant) ", "unknown", "stranger")
+# STRONG injection evidence — the engine's exact per-arg label (engine.py: a value that appears ONLY
+# inside untrusted free text → whoever wrote it chose this). Enough to hard-DENY an on-scope step.
+# NOTE: match this precise phrase, NOT bare "untrusted" — the generic "session has ingested N
+# quarantined (untrusted) tool output(s)" note also contains that word and is NOT per-action evidence.
+_INJECTION_DERIVED = ("injection-derived",)
+# WEAK: unknown/unclear origin — worth flagging (injection_suspected) but NOT a hard deny on its own,
+# or every step-2 read-then-act in a benign multi-step task gets denied.
+_UNKNOWN_MARKERS = ("unknown origin",)
 
 
 @dataclass
@@ -57,19 +64,34 @@ class SiftJudge:
 
     def judge(self, facts: StepFacts) -> Verdict:
         try:
+            # injection is decided by THIS action's provenance labels (did a value come from
+            # injection-derived / unknown-origin content?), NOT by the mere presence of quarantined
+            # output — the engine quarantines EVERY tool result, so a quarantine-exists test would
+            # falsely flag every step after the first as injected → spurious deviation DENYs.
             prov = "; ".join(facts.input_labels).lower()
-            injected = any(m in prov for m in _INJECTION_MARKERS) or bool(facts.quarantined)
+            injection_derived = any(m in prov for m in _INJECTION_DERIVED)   # strong → can deny
+            injected = injection_derived or any(m in prov for m in _UNKNOWN_MARKERS)  # broad → flag only
             history = "\n".join(facts.history[-4:]) if facts.history else ""
             s = self.scorer.score(facts.tool, facts.args, goal=facts.goal,
-                                  history=history, sink_provenance=("tool" if injected else "user"))
+                                  history=history, sink_provenance=("tool" if injection_derived else "user"))
             st = s.struct
             bands = self.scorer.bands
             matched_behavior = bool(s.matched_behavior)
             # harmful (→ DENY via ethics) comes ONLY from the trained malicious signal, not from a
             # workspace rule. A matched workspace rule is a SOFT signal (side_task) → the engine
             # gates it to ASK, so "you didn't ask me to commit" prompts a human instead of blocking.
-            harmful = s.model_risk >= bands.tau_deny
-            deviation = injected and s.model_risk >= bands.tau_ask
+            # deterministic bulk-harm: a mass operation that destroys / sends-out / touches sensitive
+            # data is harmful regardless of the model (which blurs 'all' vs 'scoped'). Import lazily
+            # from the sift package that the scorer came from.
+            try:
+                from sift.features.structural import bulk_harm_rule
+                bulk_harm = bool(bulk_harm_rule(st))
+            except Exception:
+                bulk_harm = False
+            harmful = bool(s.model_risk >= bands.tau_deny or bulk_harm)
+            # deviation hard-denies ONLY on STRONG injection evidence (not mere unknown-origin) — else
+            # benign multi-step read-then-act flows get spuriously denied.
+            deviation = injection_derived and s.model_risk >= bands.tau_ask
             return Verdict(
                 serves_goal=(s.risk < bands.tau_ask and not deviation and not matched_behavior),
                 deviation=deviation,
@@ -82,7 +104,8 @@ class SiftJudge:
                 accesses_secrets=bool(st.payload_sensitive),
                 external_exfil=bool(st.has_external_dest and (st.sink_from_tool_output or st.sink_unknown)),
                 injection_suspected=bool(injected),
-                reason=s.reason,
+                reason=(f"bulk data operation over all records (Impact TA0040) · high · risk={s.model_risk:.2f}"
+                        if bulk_harm and s.model_risk < bands.tau_deny else s.reason),
             )
         except Exception as exc:  # fail CLOSED, flagged as error (not a real detection)
             return Verdict.errored(f"sift judge unavailable ({type(exc).__name__}: {exc})"[:200])

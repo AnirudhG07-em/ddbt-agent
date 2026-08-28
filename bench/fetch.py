@@ -52,13 +52,9 @@ def fetch_toolemu() -> bool:
 def fetch_agentsafetybench() -> bool:
     if have("agentsafetybench"):
         return True
-    # try a couple of likely raw paths; skip cleanly if the layout differs
-    for url in (
-        "https://raw.githubusercontent.com/thu-coai/Agent-SafetyBench/main/data/test.json",
-        "https://raw.githubusercontent.com/thu-coai/Agent-SafetyBench/main/data/data.json",
-    ):
-        if _download(url, DATA / "agentsafetybench" / "data.json"):
-            return True
+    url = "https://raw.githubusercontent.com/thu-coai/Agent-SafetyBench/main/data/released_data.json"
+    if _download(url, DATA / "agentsafetybench" / "released_data.json"):
+        return True
     return have("agentsafetybench")
 
 

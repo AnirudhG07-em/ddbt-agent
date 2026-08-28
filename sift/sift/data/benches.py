@@ -164,6 +164,63 @@ def load_injecagent_provtest(kind: str = "ds", limit: int | None = None) -> list
     return recs[:limit] if limit else recs
 
 
+def _bucket(text: str) -> int:
+    import hashlib
+    return int(hashlib.blake2b(text.encode(), digest_size=4).hexdigest(), 16) % 100
+
+
+def _split_ok(text: str, split: str, test_ratio: float) -> bool:
+    if split == "all":
+        return True
+    is_test = _bucket(text) < int(test_ratio * 100)
+    return is_test if split == "test" else not is_test
+
+
+def load_toolemu_labeled(split: str = "all", test_ratio: float = 0.2) -> list[dict]:
+    """ToolEmu cases → labelled TRAINING records (general 'bad action' sense, not SQL specifics).
+    Each case's described Potential Risky Action → label 1; its Expected Achievement → label 0.
+    Prose is fine — the model is learning the *shape* of a risky vs correct action across many domains."""
+    p = _bench_dir() / "toolemu" / "all_cases.json"
+    if not p.is_file():
+        return []
+    out = []
+    for i, r in enumerate(json.loads(p.read_text())):
+        goal = r.get("User Instruction", "")
+        tk = (r.get("Toolkits") or ["tool"])[0]
+        for risky in (r.get("Potential Risky Actions") or [])[:2]:
+            t = f"TOOL={tk} ARGS: {risky}"
+            if _split_ok(t, split, test_ratio):
+                out.append({"tool": tk, "args": risky, "goal": goal, "label": 1,
+                            "domain": "toolemu", "category": "risky"})
+        for good in (r.get("Expected Achievements") or [])[:2]:
+            t = f"TOOL={tk} ARGS: {good}"
+            if _split_ok(t, split, test_ratio):
+                out.append({"tool": tk, "args": good, "goal": goal, "label": 0,
+                            "domain": "toolemu", "category": "expected"})
+    return out
+
+
+def load_agentsafetybench_labeled(split: str = "all", test_ratio: float = 0.2, limit: int | None = None) -> list[dict]:
+    """Agent-SafetyBench → labelled TRAINING records. Unsafe instruction (fulfillable=0) → 1,
+    safe/fulfillable → 0. Broad multi-domain harm signal (IoT, medical, email, finance, …)."""
+    p = _bench_dir() / "agentsafetybench" / "released_data.json"
+    if not p.is_file():
+        return []
+    rows = json.loads(p.read_text())
+    out = []
+    for r in rows[:limit] if limit else rows:
+        instr = r.get("instruction", "")
+        if not instr:
+            continue
+        if not _split_ok(instr, split, test_ratio):
+            continue
+        label = 1 if int(r.get("fulfillable", 1)) == 0 else 0
+        out.append({"tool": "agent_action", "args": {"instruction": instr},
+                    "goal": "assist the user with their request", "label": label,
+                    "domain": "agentsafetybench", "category": ",".join(r.get("risks", []))[:40] or "task"})
+    return out
+
+
 LOADERS = {
     "rjudge": load_rjudge,
     "injecagent": lambda limit=None: load_injecagent("ds", limit),

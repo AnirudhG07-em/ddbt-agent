@@ -28,6 +28,19 @@ from ddbt.plugins import from_config as plugins_from_config  # noqa: E402
 
 DEFAULT_PLUGINS = ["shell_deobfuscation", "dataflow_taint", "destructive_guard"]
 
+# how each dataset is adapted — honest labelling in the table.
+#   replay      = real ground-truth tool calls run through the engine (the true fit, faithful LLM-free).
+#   sift-scorer = sift REPLACES the LLM safety scorer. ToolEmu / Agent-SafetyBench have the LLM in two
+#                 roles: the AGENT (generates actions — ddbt can't be this, it judges, not generates)
+#                 and the SCORER (judges safety — ddbt IS this). Dropping the agent, we feed sift the
+#                 benchmark's ground-truth actions and measure its safety classification vs the labels
+#                 — i.e. "replace the LLM judge with ddbt". Numbers are lower than injecagent/R-Judge
+#                 mainly from DISTRIBUTION SHIFT (IoT/medical/embodied scenarios far from sift's
+#                 injection/exfil training) + prose inputs — a TUNING target, not a broken method. The
+#                 one thing this can't do is the live-agent delta (needs an LLM actor).
+METHOD = {"injecagent": "replay", "agenttrust": "replay(reconstructed)",
+          "toolemu": "sift-scorer", "agentsafetybench": "sift-scorer"}
+
 
 def _replay(cases, judge, plugins, limit=None):
     import tempfile
@@ -65,8 +78,13 @@ def _replay(cases, judge, plugins, limit=None):
 
 
 def main(argv=None):
-    which = argv or sys.argv[1:]
-    names = which or [n for n, (mode, *_ ) in datasets.REGISTRY.items() if mode == "replay"]
+    args = argv if argv is not None else sys.argv[1:]
+    limit = None
+    if "--limit" in args:
+        i = args.index("--limit")
+        limit = int(args[i + 1])
+        args = args[:i] + args[i + 2:]
+    names = args or [n for n, (mode, *_ ) in datasets.REGISTRY.items() if mode == "replay"]
 
     judge = make_step_judge(cwd=str(HERE.parent))
     decider = judge.__class__.__name__
@@ -87,7 +105,7 @@ def main(argv=None):
             print(f"  {name:16s} SKIPPED — no replayable cases (adapter/data missing)")
             continue
         t0 = time.time()
-        m = _replay(cases, judge, None)
+        m = _replay(cases, judge, None, limit=limit)
         dt = time.time() - t0
         sp = (m["stopped"] / m["attacks"]) if m["attacks"] else float("nan")
         cl = (m["clean"] / m["benign"]) if m["benign"] else float("nan")
@@ -95,9 +113,11 @@ def main(argv=None):
         print(f"  {name:16s} attacks={m['attacks']:4d} stopped={sp:5.1%}  benign={m['benign']:4d} clean={cl:5.1%}  ({dt:.0f}s)")
 
     print("\n=== summary ===")
-    print(f"{'dataset':16s} {'attacks':>8s} {'stopped':>9s} {'benign':>7s} {'clean':>7s}")
+    print(f"{'dataset':16s} {'method':22s} {'attacks':>8s} {'stopped':>9s} {'benign':>7s} {'clean':>7s}")
     for name, na, sp, nb, cl, _ in rows:
-        print(f"{name:16s} {na:>8d} {sp:>8.1%} {nb:>7d} {cl:>6.1%}")
+        print(f"{name:16s} {METHOD.get(name, 'replay'):22s} {na:>8d} {sp:>8.1%} {nb:>7d} {cl:>6.1%}")
+    print("\nreplay = real tool calls (the true fit); proxy = recognition of prose risk on an emulation\n"
+          "benchmark (lower bound — the official eval needs a full agent-in-the-loop).")
     if not rows:
         print("(no datasets ran — fetch data or drop it into bench/data/<name>/)")
     return 0

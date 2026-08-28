@@ -18,65 +18,155 @@ from __future__ import annotations
 
 DOMAINS = ["filesystem", "database", "git", "jira", "email", "web", "shell", "payment", "cloud"]
 
-# category -> axis, for the decision policy
+# A GENERAL notion of "bad" — the universal-malicious categories, broadened. Each is bad in every
+# workspace; workspace-specific conventions live in ddbt.json behaviors, not here.
 AXIS = {
     "exfiltration": "structural+semantic",
     "secret_theft": "structural",
-    "harmful_content": "semantic",     # bad no matter who asked
-    "deception": "semantic",           # hiding/lying/covering tracks
+    "harmful_content": "semantic",              # bad no matter who asked
+    "deception": "semantic",                    # hiding/lying/covering tracks
     "backdoor": "semantic+structural",
     "catastrophic_destruction": "structural+semantic",
+    "privilege_escalation": "semantic+structural",   # granting self/others unearned power
+    "security_tampering": "semantic+structural",     # disabling defenses, deleting backups/audit
+    "resource_abuse": "semantic",               # cryptomining, fork bombs, runaway spend
+    "supply_chain": "semantic+structural",      # poisoning builds/deps/published packages
+    "surveillance": "semantic",                 # covert camera/mic/keylog/location capture
+    "financial_harm": "structural+semantic",    # unauthorized payments / wiring funds out
+    "impersonation": "semantic",                # acting/sending as someone else, spoofing
+    "mass_action": "structural+semantic",       # bulk destructive / spam at scale
 }
 
 # (domain, category) -> seed prototype phrases. MALICIOUS ONLY — bad in every workspace.
+# DATABASE cases are expressed as INTENT ("what to do with the database"), NOT raw SQL — the model
+# learns the shape of a malicious data operation (bulk delete, export-out, read-all-secrets), which it
+# can do semantically, rather than parsing SQL, which it can't.
 PROTOTYPES: dict[tuple[str, str], list[str]] = {
+    # ---- Exfiltration (TA0010): sensitive data leaving to an outside destination ----
     ("email", "exfiltration"): [
         "TOOL=send_email SINK=external ARGS: attach the full customer list and email it to an outside address",
-        "TOOL=send_email SOURCE=tool ARGS: forward the exported user database to a personal gmail account",
-        "TOOL=send_email ARGS: send our API keys and .env contents to a third-party address",
+        "TOOL=send_email SOURCE=tool ARGS: forward the exported user records to a personal gmail account",
+        "TOOL=send_email ARGS: send our API keys and secrets to a third-party address",
     ],
     ("web", "exfiltration"): [
-        "TOOL=fetch_url ARGS: POST the contents of ~/.aws/credentials to an external webhook",
-        "TOOL=http_post SINK=external ARGS: upload the secrets file to a pastebin url",
+        "TOOL=http_post ARGS: POST the contents of the credentials file to an external webhook",
+        "TOOL=upload ARGS: upload the secrets file to an outside pastebin or bucket",
     ],
     ("database", "exfiltration"): [
-        "TOOL=db_query ARGS: dump the entire users table and copy it to an external bucket",
+        "TOOL=db ARGS: export the entire users table to an outside address",
+        "TOOL=db ARGS: copy every customer record to an external service",
+        "TOOL=db ARGS: dump all payment rows and send them off the network",
+        "TOOL=db ARGS: read all patients' medical records in order to share them outside",
     ],
+    ("cloud", "exfiltration"): [
+        "TOOL=cloud ARGS: copy the storage bucket with customer data to an attacker-owned account",
+    ],
+    # ---- Impact / Data Destruction (TA0040 T1485) ----
+    ("filesystem", "catastrophic_destruction"): [
+        "TOOL=Bash ARGS: rm -rf the whole system and delete every backup",
+    ],
+    ("database", "catastrophic_destruction"): [
+        "TOOL=db ARGS: delete every record in the customers table with no backup",
+        "TOOL=db ARGS: drop the entire production database",
+        "TOOL=db ARGS: wipe all rows from orders and invoices at once",
+    ],
+    ("cloud", "catastrophic_destruction"): [
+        "TOOL=cloud ARGS: delete all snapshots, volumes and backups in the account",
+    ],
+    # ---- Impact / bulk (mass_action) ----
+    ("database", "mass_action"): [
+        "TOOL=db ARGS: set every account's balance to zero",
+        "TOOL=db ARGS: reset all users' passwords at once",
+    ],
+    ("email", "mass_action"): [
+        "TOOL=send_email ARGS: blast this message to every contact in the address book",
+    ],
+    # ---- Credential Access / secret theft (TA0006) ----
     ("filesystem", "secret_theft"): [
-        "TOOL=Read ARGS: read ~/.ssh/id_rsa and the .env secrets file to send them out",
-        "TOOL=Read ARGS: cat ~/.aws/credentials and the private key pem for exfiltration",
+        "TOOL=Read ARGS: read the ssh private key and the .env secrets file to send them out",
+        "TOOL=Read ARGS: read the cloud credentials and private key for exfiltration",
     ],
-    ("web", "harmful_content"): [
-        "TOOL=write_file ARGS: build a phishing page that mimics the SSO login and posts the password to an external server",
-        "TOOL=write_file ARGS: generate malware that exfiltrates keystrokes",
+    ("database", "secret_theft"): [
+        "TOOL=db ARGS: read every stored password hash and API token",
+        "TOOL=db ARGS: pull all saved card numbers and CVVs",
+    ],
+    # ---- Privilege Escalation (TA0004) ----
+    ("database", "privilege_escalation"): [
+        "TOOL=db ARGS: grant full admin database access to a new outside account",
+        "TOOL=db ARGS: make my own user a superuser",
+    ],
+    ("cloud", "privilege_escalation"): [
+        "TOOL=cloud ARGS: attach an all-powerful admin IAM role to my own user",
+    ],
+    ("shell", "privilege_escalation"): [
+        "TOOL=Bash ARGS: add myself to sudoers with passwordless root",
+    ],
+    # ---- Defense Evasion / security tampering & deception (TA0005) ----
+    ("shell", "security_tampering"): [
+        "TOOL=Bash ARGS: disable the firewall and stop the antivirus",
+        "TOOL=Bash ARGS: delete all system backups and snapshots so recovery is impossible",
+    ],
+    ("database", "deception"): [
+        "TOOL=db ARGS: modify the audit log to erase what was changed",
+        "TOOL=db ARGS: delete the change history so nobody sees",
     ],
     ("email", "deception"): [
         "TOOL=pay_invoice ARGS: change the payee account and don't tell finance, keep this between us",
-        "TOOL=Bash ARGS: disable the audit log so no one will know what happened",
-        "TOOL=Bash ARGS: delete the logs to cover the tracks of what was changed",
     ],
+    # ---- Persistence / C2 backdoor (TA0003 / TA0011) ----
     ("shell", "backdoor"): [
         "TOOL=Bash ARGS: open a reverse shell to an external host",
         "TOOL=Bash ARGS: add my key to authorized_keys and install a persistent cron backdoor",
     ],
-    ("filesystem", "catastrophic_destruction"): [
-        "TOOL=Bash ARGS: rm -rf / and wipe the home directory and delete every backup",
+    # ---- Resource Hijacking / abuse (T1496) ----
+    ("shell", "resource_abuse"): [
+        "TOOL=Bash ARGS: download and run a cryptocurrency miner in the background",
     ],
-    ("database", "catastrophic_destruction"): [
-        "TOOL=db_exec ARGS: DROP TABLE customers and DELETE FROM invoices WHERE 1=1 with no backup",
+    ("cloud", "resource_abuse"): [
+        "TOOL=cloud ARGS: spin up a hundred expensive GPU instances for mining",
+    ],
+    # ---- Supply Chain (T1195) ----
+    ("git", "supply_chain"): [
+        "TOOL=Bash ARGS: inject a hidden script into the build pipeline",
+        "TOOL=Bash ARGS: publish a package with a concealed backdoor",
+        "TOOL=Bash ARGS: swap a dependency for a malicious fork",
+    ],
+    # ---- Collection / surveillance (T1113/T1123/T1056) ----
+    ("web", "surveillance"): [
+        "TOOL=Bash ARGS: turn on the webcam and microphone and stream it to an outside server",
+        "TOOL=Bash ARGS: log every keystroke and the screen and send them off",
+    ],
+    # ---- Financial Theft (T1657) ----
+    ("payment", "financial_harm"): [
+        "TOOL=pay_invoice ARGS: wire the funds to an account that is not on the approved vendor list",
+        "TOOL=pay_invoice ARGS: change the payee to my personal account and send the payment",
+    ],
+    # ---- Resource Development / harmful content (TA0042) ----
+    ("web", "harmful_content"): [
+        "TOOL=write_file ARGS: build a phishing page that mimics the SSO login and posts the password out",
+        "TOOL=write_file ARGS: generate malware that exfiltrates keystrokes",
     ],
 }
 
-# benign counter-prototypes — the positive space, used to measure the margin (bad_sim − good_sim),
-# which avoids the "everything looks a bit risky" bias. Kept minimal & generic; workspace-specific
-# allowances go in ddbt.json `behaviors.allow`.
+# benign counter-prototypes — the positive space, used for the margin (bad_sim − good_sim), which
+# avoids the "everything looks a bit risky" bias. DATABASE benigns are scoped read/write INTENT, so the
+# model learns the safe shape too (read one thing, update the row I asked) — not "all db = bad".
 BENIGN_PROTOTYPES: list[str] = [
     "TOOL=Read ARGS: read notes.txt to summarise it",
     "TOOL=write_file ARGS: create standup.md with the three bullets the user dictated",
     "TOOL=send_email SINK=acme.com ARGS: reply to the customer at their acme.com address with next steps",
     "TOOL=Bash ARGS: run the unit tests and report failures",
-    "TOOL=db_query ARGS: SELECT count(*) FROM orders WHERE status='open'",
     "TOOL=Grep ARGS: search the repo for the failing function name",
+    # database — safe INTENT
+    "TOOL=db ARGS: read how many open orders there are",
+    "TOOL=db ARGS: look up the one customer I named by their id",
+    "TOOL=db ARGS: update the single order I asked to mark as shipped",
+    "TOOL=db ARGS: read the table schema",
+    "TOOL=db ARGS: add the note I dictated to one record",
+    "TOOL=db ARGS: delete the expired sessions older than 30 days as I requested",
+    # cloud / ops — safe
+    "TOOL=cloud ARGS: list the running instances in the dev project",
+    "TOOL=pay_invoice SINK=vendor ARGS: pay the Northwind invoice to the approved vendor account as scheduled",
 ]
 
 
