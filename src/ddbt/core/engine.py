@@ -29,6 +29,10 @@ class Effect(enum.Enum):
     ALLOW = "allow"
     DENY = "deny"
     ASK = "ask"
+    # a would-be DENY that a human MAY force through — only when deny_mode="override". Distinct from a
+    # normal ASK: it means "ddbt wanted to BLOCK this; the session may be dangerous", carrying a loud,
+    # layer-specific warning. Nothing is silently un-blockable, but overriding one is a deliberate act.
+    ASK_OVERRIDE = "ask_override"
 
 
 _DECISION_TO_EFFECT = {"allow": Effect.ALLOW, "gate": Effect.ASK, "deny": Effect.DENY}
@@ -50,7 +54,28 @@ class Decision:
 
     @property
     def overridable(self) -> bool:
-        return self.effect != Effect.DENY
+        return self.effect is not Effect.DENY   # ASK and ASK_OVERRIDE can be forced; a hard DENY cannot
+
+    # convenience for integrators: `if d.denied: block; elif d.needs_confirmation: confirm; else: run`
+    @property
+    def allowed(self) -> bool:
+        return self.effect is Effect.ALLOW
+
+    @property
+    def asked(self) -> bool:
+        return self.effect is Effect.ASK
+
+    @property
+    def denied(self) -> bool:
+        return self.effect is Effect.DENY       # a HARD block (deny_mode="block")
+
+    @property
+    def danger(self) -> bool:
+        return self.effect is Effect.ASK_OVERRIDE   # a would-be block, overridable — warn loudly
+
+    @property
+    def needs_confirmation(self) -> bool:
+        return self.effect in (Effect.ASK, Effect.ASK_OVERRIDE)
 
     def to_dict(self) -> dict:
         return {
@@ -122,13 +147,16 @@ def _summarize(tool: str, tool_input: dict) -> str:
 
 class Engine:
     def __init__(self, session_id, workspace_root, base_dir=None, step_judge=None, ddbt=True,
-                 error_effect="ask", grant=None, gate_offgoal=False, plugins=None, **_legacy):
+                 error_effect="ask", grant=None, gate_offgoal=False, plugins=None, deny_mode="block", **_legacy):
         from ddbt.plugins.base import PluginManager
         self.session_id = session_id
         self.workspace_root = workspace_root
         # optional pluggable defenses (shell-deobfuscation, dataflow-taint, destructive-guard, …).
         # Empty by default → pure core behaviour; the hook builds this from ddbt.json "plugins".
         self.plugins = plugins if plugins is not None else PluginManager([])
+        # "block" (default) → a DENY is a hard, un-forceable block. "override" → a DENY becomes
+        # ASK_OVERRIDE: a human MAY force it through, but with a loud, layer-specific danger warning.
+        self.deny_mode = "override" if str(_legacy.get("deny_mode", deny_mode)).lower() == "override" else "block"
         # axis 2 (harm/ethics). Axis 1 (goal-fidelity) is always on; benchmarks isolating axis 1 set
         # False. "ddbd" is accepted as a legacy alias — it's a security flag, so never silently drop it.
         self.ddbt = bool(_legacy.get("ddbd", ddbt))
@@ -194,10 +222,11 @@ class Engine:
             if gcheck.effect == "deny":
                 # a floor breach means the session is being probed — ratchet suspicion (atomic).
                 self.store.increment_meta("suspicion", 3)
-                aid = self.audit.decision(checkpoint="out-of-scope", state="deny", tool=tool_name,
-                                          summary=_summarize(tool_name, tool_input), reason=gcheck.reason,
+                effect, reason = self._as_deny(gcheck.reason, "capability ticket (out-of-scope)")
+                aid = self.audit.decision(checkpoint="out-of-scope", state=effect.value, tool=tool_name,
+                                          summary=_summarize(tool_name, tool_input), reason=reason,
                                           suspicion=self._suspicion())
-                return Decision(Effect.DENY, "deny", "out-of-scope", gcheck.reason,
+                return Decision(effect, effect.value, "out-of-scope", reason,
                                 relevant=False, stray=False,
                                 risk=chromatics.classify("deny", "out-of-scope", False, False, False, who),
                                 audit_id=aid)
@@ -218,11 +247,12 @@ class Engine:
             pv = self.plugins.pre_check(tool_name, tool_input, pctx)
             if pv is not None and pv.effect == "deny":
                 self.store.increment_meta("suspicion", 3)
-                reason = pv.reason + (f" — try: {pv.suggestion}" if pv.suggestion else "")
-                aid = self.audit.decision(checkpoint=f"plugin:{pv.plugin}", state="deny", tool=tool_name,
+                base = pv.reason + (f" — try: {pv.suggestion}" if pv.suggestion else "")
+                effect, reason = self._as_deny(base, f"plugin:{pv.plugin}")
+                aid = self.audit.decision(checkpoint=f"plugin:{pv.plugin}", state=effect.value, tool=tool_name,
                                           summary=_summarize(tool_name, tool_input), reason=reason,
                                           suspicion=self._suspicion())
-                return Decision(Effect.DENY, "deny", f"plugin:{pv.plugin}", reason, relevant=False, stray=False,
+                return Decision(effect, effect.value, f"plugin:{pv.plugin}", reason, relevant=False, stray=False,
                                 risk=chromatics.classify("deny", "out-of-scope", False, False, False, who),
                                 audit_id=aid)
             if pv is not None and pv.effect == "sanitize" and isinstance(pv.rewrite, dict):
@@ -256,34 +286,49 @@ class Engine:
         if plugin_floor is not None and effect is Effect.ALLOW:
             effect, checkpoint = Effect.ASK, f"plugin:{plugin_floor.plugin}"
             verdict.reason = f"{plugin_floor.reason} · {verdict.reason}" if verdict.reason else plugin_floor.reason
+        # deny_mode="override" → a judge/combine DENY becomes an overridable, loudly-warned ASK_OVERRIDE
+        reason = verdict.reason
+        if effect is Effect.DENY:
+            effect, reason = self._as_deny(verdict.reason, checkpoint)
         if not verdict.error:
-            # this step's evidence tightens FUTURE steps (see _bump_suspicion)
-            self._bump_suspicion(verdict, blocked=effect is Effect.DENY)
+            # this step's evidence tightens FUTURE steps; a downgraded block still counts as "blocked"
+            self._bump_suspicion(verdict, blocked=effect in (Effect.DENY, Effect.ASK_OVERRIDE))
 
-        # a call going ahead spends one unit of grant quota (atomic). ASK counts too — debit at
-        # decision time so a spent ticket denies the next step.
-        if gcheck is not None and gcheck.quota_key and effect in (Effect.ALLOW, Effect.ASK):
+        # a call going ahead spends one unit of grant quota (atomic). ASK / ASK_OVERRIDE may proceed too
+        # — debit at decision time so a spent ticket denies the next step.
+        if gcheck is not None and gcheck.quota_key and effect in (Effect.ALLOW, Effect.ASK, Effect.ASK_OVERRIDE):
             self.store.increment_meta(f"grant_used:{gcheck.quota_key}", 1)
 
+        chroma = "deny" if effect is Effect.ASK_OVERRIDE else effect.value   # alarming colour for a downgraded block
         aid = self.audit.decision(
             checkpoint=checkpoint,
             state=effect.value,
             tool=tool_name,
             summary=_summarize(tool_name, tool_input),
-            reason=verdict.reason,
+            reason=reason,
             error=verdict.error,
             strictness=strictness,
             suspicion=self._suspicion(),
             **verdict.signals(),  # the full diagnostic checklist (data-gathering)
         )
         return Decision(
-            effect, effect.value, checkpoint, verdict.reason,
+            effect, effect.value, checkpoint, reason,
             relevant=verdict.serves_goal, harmful=verdict.harmful, stray=verdict.deviation,
             error=verdict.error,
-            risk=chromatics.classify(effect.value, checkpoint, verdict.serves_goal,
+            risk=chromatics.classify(chroma, checkpoint, verdict.serves_goal,
                                      verdict.harmful, verdict.deviation, who),
             audit_id=aid,
         )
+
+    def _as_deny(self, reason: str, layer: str) -> tuple[Effect, str]:
+        """Turn a would-be DENY into the configured outcome. deny_mode='block' (default) → a hard DENY;
+        deny_mode='override' → ASK_OVERRIDE carrying a loud, layer-specific danger warning a human may
+        force through. The warning names WHICH layer wanted to block and WHY, so the override is informed."""
+        if self.deny_mode == "override":
+            return Effect.ASK_OVERRIDE, (
+                f"⚠ DANGER — ddbt would BLOCK this ({layer}). This session/query may be malicious; "
+                f"proceed ONLY if you are certain it's you. Suspected: {reason}")
+        return Effect.DENY, reason
 
     def _combine(self, verdict, strictness: int = 0, who: str = "you") -> tuple[Effect, str]:
         """Checklist → decision. Axis 1 (deviation) hard-denies injection-linked steps; axis 2

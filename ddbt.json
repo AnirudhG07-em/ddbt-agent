@@ -5,6 +5,7 @@
   "ddbt": true,
   "gate_offgoal": true,
   "error_effect": "ask",
+  "deny_mode": "block",
   "rulesets": [],
   "llm": {
     "provider": null,
@@ -30,16 +31,17 @@
     ]
   },
   "plugins": [
-    "shell_deobfuscation",
-    "provenance_taint",
-    "exfil_budget",
-    "net_filter",
-    "net_semantic",
-    "killchain",
-    "trajectory_score",
-    "policy_rules",
-    "destructive_guard",
-    "mitre_guard"
+    "reveal_hidden_commands",
+    "stop_secret_exfiltration",
+    "stop_slow_data_leaks",
+    "control_network_egress",
+    "review_sensitive_sends",
+    "detect_multi_step_attacks",
+    "watch_session_risk",
+    "custom_rules",
+    "block_destructive_commands",
+    "block_known_attacks",
+    "redact_personal_data"
   ],
   "trajectory_rules": [
     {

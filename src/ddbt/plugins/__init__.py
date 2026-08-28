@@ -24,21 +24,50 @@ from ddbt.plugins.provenance_taint import ProvenanceTaint
 from ddbt.plugins.shell_deobfuscation import ShellDeobfuscation
 from ddbt.plugins.trajectory_score import TrajectoryScore
 
-REGISTRY = {
+# canonical short name → class (what the code refers to internally)
+_CLASSES = {
     "shell_deobfuscation": ShellDeobfuscation,
     "provenance_taint": ProvenanceTaint,      # trajectory taint: edge-propagation + decode-then-match
     "exfil_budget": ExfilBudget,              # low-and-slow: cumulative volume / chunk-count / beacon / db-coverage
     "net_filter": NetFilter,                  # egress control: destination-provenance / SSRF / exfil-service denylist
-    "net_semantic": NetSemantic,              # meaning-based egress review (Model2Vec): sensitivity + goal-relatedness, ASK-only
-    "killchain": KillChain,                   # P3: correlate single-step signals into a multi-stage attack (Holmes)
-    "trajectory_score": TrajectoryScore,      # P4: holistic session-risk score (context-exfil gap, burst, novelty, goal-drift)
-    "policy_rules": PolicyRules,              # P5: declarative workspace trajectory DSL (ddbt.json "trajectory_rules")
+    "net_semantic": NetSemantic,              # meaning-based egress review (Model2Vec)
+    "killchain": KillChain,                   # multi-stage attack correlation (Holmes)
+    "trajectory_score": TrajectoryScore,      # holistic session-risk score
+    "policy_rules": PolicyRules,              # declarative workspace trajectory DSL
     "destructive_guard": DestructiveGuard,
     "mitre_guard": MitreGuard,
     "pii_dlp": PiiDlp,
 }
 
-__all__ = ["Plugin", "PluginManager", "PluginContext", "PreVerdict", "REGISTRY", "build", "from_config"]
+# INTUITIVE aliases → canonical name. These are what a human reads in ddbt.json — self-describing, so
+# anyone understands what each plugin does. Either the intuitive OR the short name works in config.
+ALIASES = {
+    "reveal_hidden_commands":     "shell_deobfuscation",   # de-obfuscate shell (base64/hex/quote tricks)
+    "stop_secret_exfiltration":   "provenance_taint",      # a secret read earlier can't leave, even re-encoded
+    "stop_slow_data_leaks":       "exfil_budget",          # low-and-slow: bulk volume / chunked / beaconing
+    "control_network_egress":     "net_filter",            # who data may be sent to (SSRF, exfil hosts, provenance)
+    "review_sensitive_sends":     "net_semantic",          # ask a human before sensitive-looking data leaves
+    "detect_multi_step_attacks":  "killchain",             # read→encode→exfil chains innocuous step-by-step
+    "watch_session_risk":         "trajectory_score",      # the whole session's risk shape (drift, bursts)
+    "custom_rules":               "policy_rules",          # your own cross-step rules in ddbt.json
+    "block_destructive_commands": "destructive_guard",     # rm -rf /, DROP DATABASE, force-push, …
+    "block_known_attacks":        "mitre_guard",           # MITRE ATT&CK signature library
+    "redact_personal_data":       "pii_dlp",               # strip names/emails/SSNs/cards from outbound data
+}
+
+REGISTRY = {**_CLASSES, **{alias: _CLASSES[canon] for alias, canon in ALIASES.items()}}
+
+# The out-of-the-box default — ALL plugins on, named intuitively, in pipeline order. One canonical
+# list, used by ddbt.json's template, the demos, and the benchmarks.
+DEFAULT_PLUGINS = [
+    "reveal_hidden_commands", "stop_secret_exfiltration", "stop_slow_data_leaks",
+    "control_network_egress", "review_sensitive_sends", "detect_multi_step_attacks",
+    "watch_session_risk", "custom_rules", "block_destructive_commands",
+    "block_known_attacks", "redact_personal_data",
+]
+
+__all__ = ["Plugin", "PluginManager", "PluginContext", "PreVerdict", "REGISTRY", "ALIASES",
+           "DEFAULT_PLUGINS", "build", "from_config"]
 
 
 def build(spec, trusted_domains: tuple[str, ...] = ()) -> PluginManager:

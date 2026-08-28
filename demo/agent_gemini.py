@@ -30,7 +30,7 @@ import time
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 
 from ddbt.core import chromatics  # noqa: E402
-from ddbt.core.engine import Effect, Engine  # noqa: E402
+from ddbt.core.engine import Effect  # noqa: E402
 from ddbt.core.grant import Grant  # noqa: E402
 
 # ---------------------------------------------------------------- colours
@@ -49,7 +49,8 @@ WHITE = fg(235, 238, 242)
 GREEN = fg(60, 200, 90)
 AMBER = fg(225, 170, 40)
 RED = fg(230, 70, 60)
-BADGE = {Effect.ALLOW: (GREEN, "ALLOW"), Effect.DENY: (RED, "DENY "), Effect.ASK: (AMBER, "ASK  ")}
+BADGE = {Effect.ALLOW: (GREEN, "ALLOW"), Effect.DENY: (RED, "DENY "), Effect.ASK: (AMBER, "ASK  "),
+         Effect.ASK_OVERRIDE: (RED, "OVER?")}
 
 
 def swatch(rgb):
@@ -249,12 +250,19 @@ def main(argv=None):
 
     grant = Grant.from_dict(TICKET, now=time.time())
     base, ws = tempfile.mkdtemp(), tempfile.mkdtemp()
+    from ddbt import Guard
     from ddbt.judge.provider import make_step_judge
+    from ddbt.plugins import DEFAULT_PLUGINS
+    from ddbt.plugins import build as build_plugins
 
     step_judge = make_step_judge(cwd=".")
     decider = "sift · local" if step_judge.__class__.__name__ == "SiftJudge" else "LLM"
-    eng = Engine("agent-gemini", ws, base_dir=base, step_judge=step_judge,
-                 ddbt=harm_on, grant=grant, gate_offgoal=True)
+    # the FULL ddbt stack (ALL plugins, on by default) — same easy Guard facade any agent uses;
+    # see demo/guard_example.py for the minimal 3-line version.
+    plugins = build_plugins(DEFAULT_PLUGINS, trusted_domains=("acme.com",))
+    guard = Guard("agent-gemini", cwd=ws, base_dir=base, judge=step_judge, grant=grant,
+                  plugins=plugins, ddbt=harm_on, gate_offgoal=True)
+    eng = guard.engine   # the UI reads eng._labels / _suspicion; the loop calls guard.check / guard.record
 
     harm_bit = f"{GREEN}on{RST}" if harm_on else f"{DIM}off{RST}"
     print(f"\n  {WHITE}{BOLD}Gemini agent · guarded by ddbt{RST}   {DIM}decider: {decider} · agent: {model} · harm axis: {RST}{harm_bit}")
@@ -276,7 +284,7 @@ def main(argv=None):
             if line in ("/quit", "/exit", "/q"):
                 break
 
-            eng.on_user_prompt(line)  # this message is the trusted goal
+            guard.goal(line)  # this message is the trusted goal
             contents.append(types.Content(role="user", parts=[types.Part(text=line)]))
 
             for _ in range(8):  # bound the tool loop per user turn
@@ -297,13 +305,14 @@ def main(argv=None):
                     tool, args = fc.name, dict(fc.args or {})
                     print(f"  {AMBER}gemini wants ▸{RST} {tool}")
                     who = who_of(eng._labels(args))
-                    d = eng.evaluate_action(tool, args)
+                    d = guard.check(tool, args)
                     show_verdict(tool, args, d, who, eng._suspicion())
 
-                    run = d.effect == Effect.ALLOW
-                    if d.effect == Effect.ASK:
-                        ans = input(f"       {AMBER}approve? [y/N] {RST}").strip().lower()
-                        run = ans in ("y", "yes")
+                    run = d.allowed
+                    if d.needs_confirmation:   # ASK, or ASK_OVERRIDE (a would-be block you may force)
+                        prompt = (f"{RED}⚠ OVERRIDE this block? [y/N] {RST}" if d.danger
+                                  else f"{AMBER}approve? [y/N] {RST}")
+                        run = input(f"       {prompt}").strip().lower() in ("y", "yes")
                     if run:
                         # SANITIZE: a plugin redacted the payload → run with the cleaned args
                         run_args = d.rewritten_input if d.rewritten_input is not None else args
@@ -313,7 +322,7 @@ def main(argv=None):
                             result = TOOLS[tool](**run_args)
                         except Exception as exc:
                             result = f"tool error: {exc}"
-                        eng.record_result(tool, run_args, {"content": str(result)})
+                        guard.record(tool, run_args, {"content": str(result)})
                     else:
                         result = f"BLOCKED by ddbt ({d.reason}). Do not retry; tell the user."
                     response_parts.append(types.Part.from_function_response(name=tool, response={"result": result}))

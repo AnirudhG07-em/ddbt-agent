@@ -26,7 +26,7 @@ from ddbt.core.engine import Effect, Engine  # noqa: E402
 from ddbt.judge.provider import make_step_judge  # noqa: E402
 from ddbt.plugins import from_config as plugins_from_config  # noqa: E402
 
-DEFAULT_PLUGINS = ["shell_deobfuscation", "provenance_taint", "exfil_budget", "net_filter", "destructive_guard", "mitre_guard"]
+from ddbt.plugins import DEFAULT_PLUGINS  # canonical: all plugins, intuitive names
 
 # how each dataset is adapted — honest labelling in the table.
 #   replay      = real ground-truth tool calls run through the engine (the true fit, faithful LLM-free).

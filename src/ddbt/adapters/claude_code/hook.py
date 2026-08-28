@@ -92,7 +92,8 @@ def handle_pretooluse(payload: dict) -> dict:
 
     if decision.effect == Effect.DENY:
         return _pre_output("deny", _reason(decision, heat))
-    if decision.effect == Effect.ASK:
+    if decision.effect in (Effect.ASK, Effect.ASK_OVERRIDE):
+        # ASK_OVERRIDE is a would-be block a human may force — surfaced as "ask" with its loud warning.
         return _pre_output("ask", _reason(decision, heat))
     # ALLOW → stay out of the user's normal permission flow (exit 0). DDBT_VERBOSE narrates the
     # approval anyway, so you can see ddbt clearing the greens and know it's live.

@@ -23,6 +23,8 @@ import os
 from functools import lru_cache
 from pathlib import Path
 
+from ddbt.plugins import DEFAULT_PLUGINS as _DEFAULT_PLUGINS
+
 FILENAME = "ddbt.json"
 
 # The defaults the loader falls back to when a setting is absent. `policy` defaults to None so that
@@ -35,6 +37,7 @@ DEFAULTS = {
     "ddbt": True,              # axis 2 (harm/ethics)
     "gate_offgoal": True,      # benign off-goal step → ask a human, not a hard deny
     "error_effect": "ask",     # judge infra failure → "ask" (human) or "deny" (fail-closed)
+    "deny_mode": "block",      # "block" = hard DENY; "override" = DENY→ASK_OVERRIDE (a human may force it)
     "policy": None,            # inline capability ticket (the deterministic allow/deny floor)
     "behaviors": {},           # workspace semantic rules for the sift judge (NL or taxonomy) — no retrain
     "rulesets": [],            # names of REUSABLE rule-packs in ~/.ddbt/rules/<name>/ to fold in (additive)
@@ -55,6 +58,9 @@ TEMPLATE = {
     "ddbt": True,
     "gate_offgoal": True,
     "error_effect": "ask",
+    # "block" = a DENY is a hard, un-forceable block (default). "override" = a DENY becomes ASK_OVERRIDE:
+    # you CAN force it through, but with a loud warning naming the layer that flagged it and why.
+    "deny_mode": "block",
 
     # Reusable rule-packs (in ~/.ddbt/rules/, shared across projects) this project opts into. Author one
     # for any tool with:  ddbt create-rules "notion-cli"  — it drafts good/bad rules, you verify, it folds
@@ -84,11 +90,10 @@ TEMPLATE = {
         ],
     },
 
-    # pluggable defenses, on by default. All deterministic + light EXCEPT net_semantic, which reuses
-    # the sift Model2Vec encoder for meaning-based egress review and is ASK-only (never denies alone).
-    # Remove any you don't want, or add "pii_dlp" (Presidio-backed egress PII check). See src/ddbt/plugins/.
-    "plugins": ["shell_deobfuscation", "provenance_taint", "exfil_budget", "net_filter", "net_semantic",
-                "killchain", "trajectory_score", "policy_rules", "destructive_guard", "mitre_guard"],
+    # ALL defenses on by default, named so anyone can read what each does (short names also work).
+    # Remove any you don't want. 'review_sensitive_sends' reuses the sift Model2Vec encoder; the rest
+    # are deterministic + light. See src/ddbt/plugins/ (and plugins.ALIASES for the name mapping).
+    "plugins": list(_DEFAULT_PLUGINS),
 
     # P5 — declarative cross-step rules, evaluated by policy_rules against the whole session. Add your
     # own freely; see src/ddbt/plugins/policy_rules.py for the full condition vocabulary.
@@ -351,6 +356,7 @@ def engine_kwargs(cwd: str | Path | None = None) -> dict:
         "ddbt": bool(c.get("ddbt", c.get("ddbd", True))),  # "ddbd" = legacy alias
         "gate_offgoal": bool(c.get("gate_offgoal", True)),
         "error_effect": str(c.get("error_effect", "ask")),
+        "deny_mode": (os.environ.get("DDBT_DENY_MODE") or str(c.get("deny_mode", "block"))).lower(),
     }
 
 
