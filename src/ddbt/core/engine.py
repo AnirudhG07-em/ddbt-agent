@@ -23,6 +23,10 @@ from ddbt.store.session import SessionStore
 _CONTINUATION = {"continue", "keep going", "go on", "next", "proceed", "yes", "do it", "go ahead", "resume"}
 # tools with no system effect — pure bookkeeping/chat, never judged (doc: chat flows free)
 _NOOP_TOOLS = {"TodoWrite"}
+# Operator-facing messages: no external side-effect (the human sees them by construction), so
+# they are never a silent hard-block. Surfacing/quoting injected content back to the user is
+# transparency, not a dangerous deviation — and a message can't exfiltrate (the user is trusted).
+_MESSAGE_TOOLS = {"respond_to_user"}
 
 
 class Effect(enum.Enum):
@@ -287,7 +291,7 @@ class Engine:
         )
         verdict = self.step_judge.judge(facts)
         strictness = self._strictness()  # derived from suspicion accumulated by PRIOR steps
-        effect, checkpoint = self._combine(verdict, strictness, who)
+        effect, checkpoint = self._combine(verdict, strictness, who, message=tool_name in _MESSAGE_TOOLS)
         # a plugin ASK-floor escalates an otherwise-ALLOW step to a human check
         if plugin_floor is not None and effect is Effect.ALLOW:
             effect, checkpoint = Effect.ASK, f"plugin:{plugin_floor.plugin}"
@@ -338,13 +342,23 @@ class Engine:
                 f"proceed ONLY if you are certain it's you. Suspected: {reason}")
         return Effect.DENY, reason
 
-    def _combine(self, verdict, strictness: int = 0, who: str = "you") -> tuple[Effect, str]:
+    def _combine(self, verdict, strictness: int = 0, who: str = "you", message: bool = False) -> tuple[Effect, str]:
         """Checklist → decision. Axis 1 (deviation) hard-denies injection-linked steps; axis 2
         (harm) denies when ddbt is on; then adaptive strictness tightens a suspicious session."""
         if verdict.error:
             # infra failure (429, timeout, dead key) is not a security finding — ask a human,
             # don't hard-deny (that would brick a tool call in your editor). Benchmarks set "deny".
             return self.error_effect, "judge-error"
+        if message:
+            # A message to the operator has no external side-effect — the human reads it by
+            # construction — so it is never a silent hard-DENY (blocking the agent from *speaking*
+            # to its user is the wrong call; quoting/surfacing injected content is transparency, not
+            # a consequential deviation). But a message the judge finds genuinely harmful still ASKs
+            # a human — the feedback path stays intact — and a real leaked secret is caught upstream
+            # by the deterministic PII/provenance plugin floor regardless.
+            if self.ddbt and verdict.harmful:
+                return Effect.ASK, "message-review"
+            return Effect.ALLOW, "message"
         if verdict.deviation:
             # Off-goal + injection-linked (stranger/unknown provenance, suspected injection, or
             # exfil) is a hard DENY. A benign off-goal step on the agent's own initiative gates

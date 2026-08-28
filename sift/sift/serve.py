@@ -44,6 +44,64 @@ def _content_tokens(text: str) -> set[str]:
     return {t for t in _re.split(r"[^a-z0-9]+", text.lower()) if len(t) >= 3 and t not in _STOP}
 
 
+import os as _os
+
+# ---- chunked max-pool: read a long trajectory the way an LLM's attention would ----
+# A static embedder mean-pools token vectors, so a single risky clause buried in a long turn gets
+# AVERAGED AWAY — the exact failure that caps recall on prose-heavy trajectories (R-Judge). The fix,
+# with no retraining and no bigger model: split the render into overlapping windows, score EACH, and
+# take the MAX (attention-to-the-worst-span). Each window keeps the render's anchor line (GOAL/TOOL
+# tags) so it stays in-distribution for the trained head, rather than a bare mid-prose fragment.
+_CHUNK_MIN_CHARS = int(_os.environ.get("DDBT_SIFT_CHUNK_MIN", "600"))   # below this: no chunking
+_CHUNK_WINDOW = int(_os.environ.get("DDBT_SIFT_CHUNK_WINDOW", "500"))   # window size (chars of body)
+_CHUNK_OVERLAP = int(_os.environ.get("DDBT_SIFT_CHUNK_OVERLAP", "150")) # overlap so a span isn't split
+_CHUNK_CAP = int(_os.environ.get("DDBT_SIFT_CHUNK_CAP", "16"))          # max windows (bounds latency)
+_CHUNK_AGG = _os.environ.get("DDBT_SIFT_CHUNK_AGG", "softmax")          # max | top2 | softmax | off
+
+
+def _split_sentences(body: str) -> list[str]:
+    """Break on sentence / line / turn boundaries — cheap, no model."""
+    parts = _re.split(r"(?<=[.!?])\s+|\n+", body)
+    return [p for p in (s.strip() for s in parts) if p]
+
+
+def _chunk_render(text: str) -> list[str]:
+    """[full render, *windowed views]. Each view = the anchor line (GOAL/TOOL tags, kept so the head
+    sees an in-distribution render) + one overlapping ~window slice of the remaining body. Short
+    inputs return [text] unchanged, so short structured actions (e.g. InjecAgent) are never chunked."""
+    if _CHUNK_AGG == "off" or len(text) <= _CHUNK_MIN_CHARS:
+        return [text]
+    nl = text.find("\n")
+    anchor = text[:nl] if 0 <= nl <= 200 else ""
+    body = text[len(anchor):]
+    # pack sentences into ~_CHUNK_WINDOW-char windows with ~_CHUNK_OVERLAP carry-over
+    windows, cur = [], ""
+    for sent in _split_sentences(body):
+        if cur and len(cur) + len(sent) + 1 > _CHUNK_WINDOW:
+            windows.append(cur)
+            cur = (cur[-_CHUNK_OVERLAP:] + " " + sent) if _CHUNK_OVERLAP else sent
+        else:
+            cur = (cur + " " + sent) if cur else sent
+    if cur:
+        windows.append(cur)
+    views = [text] + [((anchor + "\n" + w) if anchor else w) for w in windows]
+    return views[: _CHUNK_CAP + 1]
+
+
+def _aggregate(raws) -> float:
+    """Pool per-window risks into one. Softmax (log-sum-exp, temperature 0.25) ≈ a soft max: it
+    lets the single most-dangerous window dominate without a hard max's brittleness to one noisy
+    window. `max` and `top2` (mean of the two highest) are available for the sweep."""
+    import numpy as _np
+    a = _np.atleast_1d(_np.asarray(raws, dtype=float))
+    if a.size == 1 or _CHUNK_AGG in ("max", "off"):
+        return float(a.max())
+    if _CHUNK_AGG == "top2":
+        return float(_np.sort(a)[-2:].mean())
+    t = 0.25
+    return float(t * _np.log(_np.mean(_np.exp(a / t))))
+
+
 _SEVERITY = {"ALLOW": 0, "ASK": 1, "DENY": 2}
 
 
@@ -128,9 +186,15 @@ class SiftScorer:
         rec = {"tool": tool, "args": args, "goal": goal, "history": history,
                "sink_provenance": sink_provenance, "label": 0}
         ds = to_dataset([rec], trusted_domains=trusted_domains)
-        emb = self.model.enc.encode(ds.texts)                 # full action render → the trained model
-        X = np.hstack([emb, ds.struct])
-        raw = float(self.model.clf.predict_proba(X)[:, 1][0])
+        # CHUNKED MAX-POOL: score the full render plus overlapping windows of it, and pool. The
+        # structural row is identical across windows (regex flags already scan the full text — a
+        # buried egress/secret still trips them); only the diluted SEMANTIC view is de-averaged here.
+        views = _chunk_render(ds.texts[0])
+        emb = self.model.enc.encode(views)                    # (n_views, dim)
+        struct_row = ds.struct[0]
+        X = np.hstack([emb, np.tile(struct_row, (len(views), 1))])
+        raws = self.model.clf.predict_proba(X)[:, 1]
+        raw = _aggregate(raws)
         model_risk = float(np.atleast_1d(self.calibrator.transform(np.array([raw])))[0])
 
         # behaviors match the action's EFFECT (tool+args), not the goal-laden full render

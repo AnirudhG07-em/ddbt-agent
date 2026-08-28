@@ -39,7 +39,32 @@ class RJRecord:
     label: int  # 1 = unsafe, 0 = safe
 
 
-def load_rjudge(data_dir: str, limit: int | None = None) -> list[RJRecord]:
+def _sift_bucket_text(goal: str, conv: list) -> str:
+    """Reproduce sift.data.benches EXACTLY so the train/test split here matches what the sift
+    model actually trained on — otherwise a 'held-out' eval would leak training trajectories."""
+    out = []
+    for t in conv:
+        if not isinstance(t, dict):
+            continue
+        role = t.get("role", "?")
+        content = t.get("content") or ""
+        action = t.get("action") or ""
+        piece = f"{role.upper()}: {content}"
+        if action:
+            piece += f"\n  ACTION: {action}"
+        out.append(piece)
+    return f"GOAL: {goal}\n" + "\n".join(out)
+
+
+def _is_test(text: str, test_ratio: float = 0.2) -> bool:
+    import hashlib
+    bucket = int(hashlib.blake2b(text.encode(), digest_size=4).hexdigest(), 16) % 100
+    return bucket < int(test_ratio * 100)
+
+
+def load_rjudge(data_dir: str, limit: int | None = None, split: str = "all") -> list[RJRecord]:
+    """split: 'all' (every record) | 'test' (the 20% sift never trained on — the HONEST held-out
+    number for the sift judge) | 'train'. The LLM judge is unaffected by split (never trained)."""
     records: list[RJRecord] = []
     for f in sorted(glob.glob(f"{data_dir}/**/*.json", recursive=True)):
         try:
@@ -55,6 +80,10 @@ def load_rjudge(data_dir: str, limit: int | None = None) -> list[RJRecord]:
             # `.get(k, default)` only falls back when the key is ABSENT — a present-but-null
             # value returns None. 14 R-Judge records have `content: null`, so coerce with `or`.
             goal = next((t.get("content") or "" for t in conv if t.get("role") == "user"), "")
+            if split != "all":
+                is_test = _is_test(_sift_bucket_text(goal, conv))
+                if (split == "test") != is_test:
+                    continue
             records.append(RJRecord(id=str(r.get("id", len(records))), goal=goal, turns=conv, label=int(r["label"])))
     return records[:limit] if limit else records
 

@@ -272,50 +272,37 @@ uv run ddbt bench static   --source injecagent --data bench/data/injecagent/ds_b
 uv run ddbt bench agentdojo --suite slack --limit 8
 ```
 
-| suite                          | result                                                | notes                                                                                                                                                     |
-| ------------------------------ | ----------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **R-Judge** (571 trajectories) | **F1 91.5%** on unsafe                                | recall 93.4% (281/301), specificity 88.1%, precision 89.8%, 0 judge errors. GPT-4o baseline ≈ 74%. Harm axis **off** — goal-fidelity alone produced this. |
-| **MCPTox**                     | **484/485** poisoned tool descriptions caught (99.8%) | 0 of 8 benign flagged                                                                                                                                     |
-| **InjecAgent**                 | 1054/1054 attacks stopped, 1054 benign clean (100%)   | **a regression floor, not robustness** — see caveat                                                                                                       |
+Every number below is **measured**, same ddbt pipeline each time — only the **decider** is swapped
+(local `sift` vs. an LLM judge). Nothing cherry-picked: `stopped` = attacks caught, `clean` = benign
+actions allowed through, and the graph's balanced score is just their average, so a block-everything
+guard can't win it.
 
-### The non-LLM decider (`sift`) — similar numbers, zero cost
+| benchmark (attacks / benign)     | **sift** — local, LLM-free, ~0.7 ms                | **LLM judge** — per call            |
+| -------------------------------- | -------------------------------------------------- | ----------------------------------- |
+| **InjecAgent** (1054 / 1054)     | **93.5%** stopped · **88.2%** clean                | 100% · 94.1%                        |
+| **AgentTrust** (16 / 8)          | **87.5%** · **87.5%**                              | 100% · 62.5%                        |
+| **ToolEmu** (144 / 144)          | **50.7%** · **62.5%**                              | 80.6% · 31.2%                       |
+| **AgentSafetyBench** (307 / 293) | **37.5%** · **74.7%**                              | 65.1% · 66.9%                       |
+| **R-Judge** (298 / 266)          | **F1 63.7%** (recall 67.8 · spec 49.6)             | F1 89.5% (recall 93.3 · spec 83.1)  |
+| **MCPTox** (485 / 8)             | *n/a — sift judges actions, not tool descriptions* | 99.8% caught · 0/8 benign flagged   |
 
-The default judge is now **`sift`**, a local embedding + structural model (see [`sift/`](sift/)) — no
-LLM, no API, no network. On the same benchmarks it lands within a point or two of the LLM judge, at
-**$0 and ~62 ms/query local**:
+![sift vs LLM across benchmarks](./doc/bench_sift_vs_llm.svg)
 
-| benchmark | sift (F1) | LLM judge (F1) |
-| --------- | --------- | -------------- |
-| **R-Judge** | 0.87 | 0.915 |
-| **InjecAgent** | 1.00 | 1.00 |
-| **MCPTox** | 1.00 | 0.998 |
+### The non-LLM decider (`sift`) — zero cost, and an honest gap
 
-![sift vs LLM](sift/docs/sift_vs_llm.svg)
+The default judge is **`sift`** (Semantic Intent & Flow Triage) — a local embedding + structural
+model (see [`sift/`](sift/)) — no LLM, no API, no network, **$0 and sub-millisecond**. The honest read:
 
-InjecAgent and MCPTox reach parity; R-Judge trails by ~0.04 (the honest gap, closable with
-distillation). The LLM remains available as a flagged fallback (`DDBT_JUDGE=llm` or `ddbt.json`
-`"judge": "llm"`). Full method breakdown and charts: [`sift/README.md`](sift/README.md).
+- **On injection it holds its own** — 93.5% of InjecAgent attacks stopped, and on **AgentTrust it
+  actually beats the LLM** (the LLM over-blocks benign work).
+- **On the prose-heavy sets (R-Judge, AgentSafetyBench) the LLM wins** — it reads dense trajectories
+  better. sift trades recall for speed and cost; the gap is real, not hidden.
+- **R-Judge scores every ASK as a false positive** (it's binary — no "ask a human" bucket) — but an
+  ASK is ddbt's *feature*, not a miss, so sift's F1 here is a **lower bound**. ddbt never blocks the
+  agent from *talking to you*; only tool actions with external effect are gated.
 
-## Layout
-
-```
-src/ddbt/
-  core/engine.py       the per-step pipeline: labels → ticket → judge → enforce → audit
-  core/grant.py        the capability ticket (deterministic hard floor + fast path)
-  core/bootstrap.py    Boundary 0 — config/MCP integrity (hashes + obfuscation scan)
-  core/chromatics.py   the four risk bands + session-heat colour (downstream telemetry)
-  core/provenance.py   where each value sat: structured field vs. free text
-  core/audit.py        lawful per-step audit trail
-  judge/step_judge.py  the decider (AnthropicStepJudge) + StepFacts / Verdict
-  judge/stub.py        deterministic stubs for CI/offline
-  store/session.py     SQLite session store (goal, quarantine, provenance), keyed by session_id
-  adapters/claude_code/  PreToolUse/PostToolUse/lifecycle hooks + installer
-  adapters/agentdojo/    benchmark element (judge-gated ToolsExecutor)
-bench/   AgentDojo harness + R-Judge / InjecAgent / MCPTox static replay
-demo/    demo_mcp.py (narrated) · chat_live.py (interactive)
-```
-
----
+The LLM stays available as a flagged fallback (`DDBT_JUDGE=llm` or `ddbt.json` `"judge": "llm"`).
+Full method breakdown and charts: [`sift/README.md`](sift/README.md).
 
 ## Honest limits
 
