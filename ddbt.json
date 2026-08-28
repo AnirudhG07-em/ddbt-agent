@@ -23,6 +23,11 @@
       "query the database read-only for counts or schema when asked"
     ]
   },
+  "plugins": [
+    "shell_deobfuscation",
+    "dataflow_taint",
+    "destructive_guard"
+  ],
   "policy": {
     "label": "ddbt assistant",
     "ttl_seconds": 0,

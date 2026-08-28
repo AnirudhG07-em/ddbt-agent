@@ -41,10 +41,12 @@ def _engine(payload: dict) -> Engine:
     from ddbt.core import config
     from ddbt.judge.provider import make_step_judge
 
+    from ddbt.plugins import from_config as _plugins_from_config
+
     session_id = payload.get("session_id", "default")
     cwd = payload.get("cwd") or "."
     return Engine(session_id, workspace_root=cwd, step_judge=make_step_judge(cwd=cwd),
-                  grant=_load_grant(cwd), **config.engine_kwargs(cwd))
+                  grant=_load_grant(cwd), plugins=_plugins_from_config(cwd), **config.engine_kwargs(cwd))
 
 
 # ---- attribution: make it unmistakable that DDBT (not Claude) made this call, and which layer ----

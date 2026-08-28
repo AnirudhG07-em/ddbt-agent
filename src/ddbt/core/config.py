@@ -36,6 +36,7 @@ DEFAULTS = {
     "error_effect": "ask",     # judge infra failure → "ask" (human) or "deny" (fail-closed)
     "policy": None,            # inline capability ticket (the deterministic allow/deny floor)
     "behaviors": {},           # workspace semantic rules for the sift judge (NL or taxonomy) — no retrain
+    "plugins": [],             # optional pluggable defenses (see ddbt.plugins) — names or {name: opts}
     "auth": {},                # the agent's own scoped credentials (scaffolding; doc/credentials.md)
 }
 
@@ -69,6 +70,10 @@ TEMPLATE = {
             "query the database read-only for counts or schema when asked",
         ],
     },
+
+    # pluggable defenses, on by default (all deterministic + light). Remove any you don't want, or
+    # add "pii_dlp" (Presidio-backed egress PII check). See src/ddbt/plugins/.
+    "plugins": ["shell_deobfuscation", "dataflow_taint", "destructive_guard"],
 
     "policy": {
         "label": "ddbt assistant",
@@ -179,6 +184,13 @@ def engine_kwargs(cwd: str | Path | None = None) -> dict:
         "gate_offgoal": bool(c.get("gate_offgoal", True)),
         "error_effect": str(c.get("error_effect", "ask")),
     }
+
+
+def plugins(cwd: str | Path | None = None):
+    """Enabled plugin spec from ddbt.json: a list of names or a {name: options} map. See
+    ddbt.plugins.from_config. Empty → no plugins (pure core behaviour)."""
+    p = load(cwd).get("plugins")
+    return p if isinstance(p, (list, dict)) else []
 
 
 def behaviors(cwd: str | Path | None = None) -> dict:

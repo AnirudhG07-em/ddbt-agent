@@ -305,11 +305,15 @@ def main(argv=None):
                         ans = input(f"       {AMBER}approve? [y/N] {RST}").strip().lower()
                         run = ans in ("y", "yes")
                     if run:
+                        # SANITIZE: a plugin redacted the payload → run with the cleaned args
+                        run_args = d.rewritten_input if d.rewritten_input is not None else args
+                        if d.rewritten_input is not None:
+                            print(f"       {AMBER}↳ ddbt redacted sensitive data before sending{RST}")
                         try:
-                            result = TOOLS[tool](**args)
+                            result = TOOLS[tool](**run_args)
                         except Exception as exc:
                             result = f"tool error: {exc}"
-                        eng.record_result(tool, args, {"content": str(result)})
+                        eng.record_result(tool, run_args, {"content": str(result)})
                     else:
                         result = f"BLOCKED by ddbt ({d.reason}). Do not retry; tell the user."
                     response_parts.append(types.Part.from_function_response(name=tool, response={"result": result}))

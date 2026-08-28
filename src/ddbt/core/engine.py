@@ -46,6 +46,7 @@ class Decision:
     error: bool = False  # judge couldn't decide (infra failure) — denied defensively, but flagged
     risk: str = "none"  # chromatic band (chromatics.classify): none|low|med|high — telemetry only
     audit_id: int = 0
+    rewritten_input: dict | None = None  # SANITIZE: the redacted args the caller should run instead
 
     @property
     def overridable(self) -> bool:
@@ -121,9 +122,13 @@ def _summarize(tool: str, tool_input: dict) -> str:
 
 class Engine:
     def __init__(self, session_id, workspace_root, base_dir=None, step_judge=None, ddbt=True,
-                 error_effect="ask", grant=None, gate_offgoal=False, **_legacy):
+                 error_effect="ask", grant=None, gate_offgoal=False, plugins=None, **_legacy):
+        from ddbt.plugins.base import PluginManager
         self.session_id = session_id
         self.workspace_root = workspace_root
+        # optional pluggable defenses (shell-deobfuscation, dataflow-taint, destructive-guard, …).
+        # Empty by default → pure core behaviour; the hook builds this from ddbt.json "plugins".
+        self.plugins = plugins if plugins is not None else PluginManager([])
         # axis 2 (harm/ethics). Axis 1 (goal-fidelity) is always on; benchmarks isolating axis 1 set
         # False. "ddbd" is accepted as a legacy alias — it's a security flag, so never silently drop it.
         self.ddbt = bool(_legacy.get("ddbd", ddbt))
@@ -172,6 +177,10 @@ class Engine:
             aid = self.audit.decision(checkpoint="noop", state="allow", tool=tool_name, summary="no system effect", reason="pure tool")
             return Decision(Effect.ALLOW, "allow", "noop", "pure tool, no system effect", audit_id=aid)
 
+        # PLUGIN normalize — expose hidden intent (e.g. shell deobfuscation) before anything reads it
+        if self.plugins:
+            tool_input = self.plugins.normalize(tool_name, tool_input)
+
         # provenance labels — computed once, reused for the chromatic "who" and the judge facts
         labels = self._labels(tool_input)
         who = _who(labels)
@@ -200,6 +209,33 @@ class Engine:
                                 audit_id=aid)
             # gcheck.effect == "defer" → in scope but consequential; fall through to the judge
 
+        # PLUGIN pre_check — deterministic hard rules that run BEFORE the judge (destructive commands,
+        # dataflow exfil chains, PII egress). A plugin only tightens: DENY short-circuits; ASK is a floor.
+        plugin_floor = None
+        if self.plugins:
+            from ddbt.plugins.base import PluginContext
+            pctx = PluginContext(session_id=self.session_id, goal=self.goal, provenance=who, store=self.store)
+            pv = self.plugins.pre_check(tool_name, tool_input, pctx)
+            if pv is not None and pv.effect == "deny":
+                self.store.increment_meta("suspicion", 3)
+                reason = pv.reason + (f" — try: {pv.suggestion}" if pv.suggestion else "")
+                aid = self.audit.decision(checkpoint=f"plugin:{pv.plugin}", state="deny", tool=tool_name,
+                                          summary=_summarize(tool_name, tool_input), reason=reason,
+                                          suspicion=self._suspicion())
+                return Decision(Effect.DENY, "deny", f"plugin:{pv.plugin}", reason, relevant=False, stray=False,
+                                risk=chromatics.classify("deny", "out-of-scope", False, False, False, who),
+                                audit_id=aid)
+            if pv is not None and pv.effect == "sanitize" and isinstance(pv.rewrite, dict):
+                # redact-and-send: the payload is cleaned, the destination was already in scope → allow
+                # the action with the redacted args (the caller runs Decision.rewritten_input).
+                aid = self.audit.decision(checkpoint=f"plugin:{pv.plugin}", state="allow", tool=tool_name,
+                                          summary=_summarize(tool_name, pv.rewrite), reason=pv.reason)
+                return Decision(Effect.ALLOW, "allow", f"plugin:{pv.plugin}", pv.reason,
+                                risk=chromatics.classify("allow", "grant-fastpath", True, False, False, who),
+                                audit_id=aid, rewritten_input=pv.rewrite)
+            if pv is not None and pv.effect == "ask":
+                plugin_floor = pv
+
         # show the judge the quarantined output that MENTIONS this step's arguments (not merely the
         # most recent) — else an injection ingested steps ago drops out of the window before it acts.
         values = [v for v, is_id in self._consequential_values(tool_input) if is_id]
@@ -216,6 +252,10 @@ class Engine:
         verdict = self.step_judge.judge(facts)
         strictness = self._strictness()  # derived from suspicion accumulated by PRIOR steps
         effect, checkpoint = self._combine(verdict, strictness, who)
+        # a plugin ASK-floor escalates an otherwise-ALLOW step to a human check
+        if plugin_floor is not None and effect is Effect.ALLOW:
+            effect, checkpoint = Effect.ASK, f"plugin:{plugin_floor.plugin}"
+            verdict.reason = f"{plugin_floor.reason} · {verdict.reason}" if verdict.reason else plugin_floor.reason
         if not verdict.error:
             # this step's evidence tightens FUTURE steps (see _bump_suspicion)
             self._bump_suspicion(verdict, blocked=effect is Effect.DENY)
@@ -398,6 +438,11 @@ class Engine:
         if isinstance(tool_response, dict):
             inner = tool_response.get("content") or tool_response.get("output") or tool_response.get("stdout")
             payload = tool_response if inner is None else inner
+        # PLUGIN observe — let dataflow-taint mark a secret read for the cross-call exfil check
+        if self.plugins:
+            from ddbt.plugins.base import PluginContext
+            self.plugins.observe(tool_name, tool_input, payload,
+                                 PluginContext(session_id=self.session_id, goal=self.goal, store=self.store))
         try:
             rows = provenance.index_response(payload)
         except Exception:  # indexing is best-effort; never break a tool call over it

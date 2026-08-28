@@ -19,6 +19,9 @@ dependencies = [
 
 [project.optional-dependencies]
 mcp = ["mcp>=1.2"]
+# the pii_dlp plugin uses Presidio for validated PII detection on egress; without it, the plugin
+# falls back to a built-in regex detector, so this is optional.
+pii = ["presidio-analyzer>=2.2"]
 # alternative judge backend — same prompts/schema, so runs are comparable across providers
 gemini = ["google-genai>=1.0"]
 bench = ["agentdojo"]

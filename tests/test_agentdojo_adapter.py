@@ -53,7 +53,7 @@ def test_judge_blocks_one_allows_another():
 
 
 def test_splice_replaces_all_tools_executors():
-    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "bench"))
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "bench" / "agentdojo"))
     from agentdojo.agent_pipeline import AgentPipeline, ToolsExecutor
     from agentdojo.agent_pipeline.tool_execution import ToolsExecutionLoop
     from harness import splice_ddbt_defense
