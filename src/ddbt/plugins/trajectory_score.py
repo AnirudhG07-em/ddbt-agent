@@ -16,16 +16,11 @@ from __future__ import annotations
 
 import re
 
-from ddbt.core.ledger import EGRESS, Ledger, destinations, flatten, is_external
+from ddbt.core.ledger import EGRESS, Ledger, destinations, flatten, is_external, registrable as _registrable
 from ddbt.plugins.base import Plugin, PluginContext, PreVerdict
 
 _HIGH_RISK = re.compile(r"send|email|mail|post|upload|push|curl|wget|transfer|pay|delete|remove|rm\s|drop|"
                         r"grant|revoke|deploy|execute|share|export", re.I)
-
-
-def _registrable(host: str) -> str:
-    labels = host.strip(".").split(".")
-    return ".".join(labels[-2:]) if len(labels) >= 2 else host
 
 
 class TrajectoryScore(Plugin):

@@ -26,11 +26,9 @@ import re
 from urllib.parse import urlparse
 
 from ddbt.core import provenance
-from ddbt.core.ledger import Ledger, MAX_SCAN_CHARS, destinations, flatten, is_external
+from ddbt.core.ledger import (EGRESS as _EGRESS, MAX_SCAN_CHARS, Ledger, destinations, flatten,
+                              MULTI_SUFFIX, is_external, registrable as _registrable, split_ident as _split_ident)
 from ddbt.plugins.base import Plugin, PluginContext, PreVerdict
-
-_EGRESS = re.compile(r"send|email|mail|post|put|upload|push|publish|share|export|curl|wget|"
-                     r"webhook|sync|transfer|sftp|scp|pay|wire|slack|discord|telegram|message|notify|sms", re.I)
 
 # High-impact / irreversible / actuation verbs — the Direct-Harm class (money, access, destruction,
 # data mutation, credentials) that has no external sink for the destination gate to catch; gated on
@@ -45,11 +43,6 @@ _HIGH_IMPACT = re.compile(
     r"create|update|modify|edit|manage|move|rename|replace|overwrite|set|add|dispatch|submit|issue|"
     r"password|passcode|pin|credential|"
     r"book|reserve|cancel|schedule|approve|authorize|publish|share|post|upload)\b", re.I)
-
-
-def _split_ident(name: str) -> str:
-    """BankManagerPayBill / bank_manager_pay_bill → 'Bank Manager Pay Bill' so \\b verb matches fire."""
-    return re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", re.sub(r"[_\-]+", " ", name))
 
 # Cloud-metadata endpoints (credential theft via SSRF) and the special-use ranges we never egress to.
 _METADATA_HOSTS = frozenset({"metadata.google.internal", "metadata", "169.254.169.254", "fd00:ec2::254",
@@ -75,15 +68,6 @@ _EXFIL_SERVICES = frozenset({
     "t.ly", "shorturl.at", "rebrand.ly", "adf.ly",
 })
 
-# Minimal multi-label public suffixes so eTLD+1 is correct on the common shared platforms (a full PSL
-# snapshot is the next upgrade). Without these, evil.github.io would collapse to github.io and inherit
-# an allowlist entry it shouldn't. Extend via config {"net_filter": {"multi_suffixes": [...]}}.
-_MULTI_SUFFIX = frozenset({
-    "co.uk", "org.uk", "gov.uk", "ac.uk", "co.jp", "com.au", "com.br", "co.in", "co.za", "com.cn",
-    "github.io", "gitlab.io", "herokuapp.com", "blogspot.com", "web.app", "firebaseapp.com",
-    "pages.dev", "workers.dev", "s3.amazonaws.com", "azurewebsites.net", "cloudfront.net", "netlify.app",
-})
-
 _SINK_KINDS = ("email", "url", "phone", "handle")
 
 
@@ -98,21 +82,6 @@ def _host_of(kind: str, ident: str) -> str | None:
     if kind == "email" and "@" in ident:
         return ident.rsplit("@", 1)[-1] or None
     return None
-
-
-def _registrable(host: str, multi: frozenset) -> str:
-    """eTLD+1 with awareness of multi-label suffixes (co.uk, github.io). Not a full PSL, but enough
-    that shared-platform tenants are distinct and list-matching isn't trivially bypassed."""
-    labels = host.strip(".").split(".")
-    if len(labels) <= 2:
-        return host
-    last2 = ".".join(labels[-2:])
-    last3 = ".".join(labels[-3:])
-    if last3 in multi:
-        return ".".join(labels[-4:]) if len(labels) >= 4 else host
-    if last2 in multi:
-        return last3
-    return last2
 
 
 def _suffix_match(host: str, denyset: frozenset) -> bool:
@@ -149,7 +118,7 @@ class NetFilter(Plugin):
                  gate_newly_seen: bool = True, action_integrity: bool = True):
         self.trusted = tuple(d.lower() for d in trusted_domains) + tuple(h.lower() for h in allow_hosts)
         self.exfil = _EXFIL_SERVICES | {s.lower() for s in exfil_services}
-        self.multi = _MULTI_SUFFIX | {s.lower() for s in multi_suffixes}
+        self.multi = MULTI_SUFFIX | {s.lower() for s in multi_suffixes}
         self.provenance_gate = provenance_gate
         self.block_ssrf = block_ssrf
         self.block_exfil_services = block_exfil_services
@@ -165,8 +134,8 @@ class NetFilter(Plugin):
         integrity = None
         if self.action_integrity and _HIGH_IMPACT.search(_split_ident(tool)) and self._injection_driven(text, ctx):
             integrity = PreVerdict("ask",
-                f"Untrusted-driven action (TA0002) · this high-impact action's parameters came from "
-                f"untrusted tool content, not from your request — confirm before it runs", self.name)
+                "Untrusted-driven action (TA0002) · this high-impact action's parameters came from "
+                "untrusted tool content, not from your request — confirm before it runs", self.name)
         if not (_EGRESS.search(tool) or _EGRESS.search(text) or destinations(text)):
             return integrity
         sinks = [(k, t) for k, t in provenance.extract(text) if k in _SINK_KINDS]

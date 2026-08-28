@@ -15,11 +15,11 @@ from __future__ import annotations
 
 import re
 
+from ddbt.core.ledger import EGRESS as _EGRESS, flatten as _flatten
 from ddbt.plugins.base import Plugin, PluginContext, PreVerdict
 
 _EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@([A-Za-z0-9.-]+\.[A-Za-z]{2,})")
 _URL = re.compile(r"https?://([^/\s:'\"]+)")
-_EGRESS = re.compile(r"send|email|mail|post|put|upload|share|export|curl|webhook|sftp|scp", re.I)
 
 # fallback regex detectors (used when Presidio isn't installed)
 _FALLBACK = {
@@ -43,14 +43,6 @@ def _luhn_ok(num: str) -> bool:
     return s % 10 == 0
 
 
-def _flatten(obj) -> str:
-    if isinstance(obj, str):
-        return obj
-    if isinstance(obj, dict):
-        return " ".join(_flatten(v) for v in obj.values())
-    if isinstance(obj, (list, tuple)):
-        return " ".join(_flatten(v) for v in obj)
-    return str(obj)
 
 
 class PiiDlp(Plugin):

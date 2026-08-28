@@ -984,6 +984,7 @@ dependencies = [
     { name = "joblib" },
     { name = "model2vec" },
     { name = "numpy" },
+    { name = "pytest" },
     { name = "scikit-learn" },
 ]
 
@@ -1009,6 +1010,13 @@ pii = [
     { name = "presidio-analyzer" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "hypothesis" },
+    { name = "pytest" },
+    { name = "pytest-cov" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "agentdojo", marker = "extra == 'agentdyn'", git = "https://github.com/leolee99/AgentDyn.git" },
@@ -1021,11 +1029,19 @@ requires-dist = [
     { name = "model2vec", specifier = ">=0.3" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "presidio-analyzer", marker = "extra == 'pii'", specifier = ">=2.2" },
+    { name = "pytest", specifier = ">=9.1.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
     { name = "pytest-cov", marker = "extra == 'dev'" },
     { name = "scikit-learn", specifier = ">=1.4" },
 ]
 provides-extras = ["mcp", "pii", "gemini", "bench", "agentdyn", "dev"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "hypothesis" },
+    { name = "pytest" },
+    { name = "pytest-cov" },
+]
 
 [[package]]
 name = "deepdiff"

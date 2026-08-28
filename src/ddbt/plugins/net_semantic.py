@@ -36,7 +36,6 @@ import numpy as np
 from ddbt.core.ledger import MAX_SCAN_CHARS, destinations, flatten, is_external
 from ddbt.judge.embedder import get_encoder
 from ddbt.plugins.base import Plugin, PluginContext, PreVerdict
-from ddbt.plugins.net_filter import _EGRESS
 
 # Exemplars define each concept by MEANING — a payload need only be semantically near them, not match
 # any keyword. Extend per workspace via ddbt.json {"net_semantic": {"exemplars": {"class": [...]}}}.

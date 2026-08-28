@@ -23,14 +23,11 @@ short benign sequences).
 from __future__ import annotations
 
 import json
-import re
 import statistics
 
-from ddbt.core.ledger import MAX_SCAN_CHARS, Ledger, destinations, flatten, is_external
+from ddbt.core.ledger import EGRESS as _EGRESS, MAX_SCAN_CHARS, Ledger, destinations, flatten, is_external
 from ddbt.plugins.base import Plugin, PluginContext, PreVerdict
 
-_EGRESS = re.compile(r"send|email|mail|post|put|upload|push|publish|share|export|curl|wget|"
-                     r"webhook|sync|transfer|sftp|scp|pay|wire|slack|discord|telegram", re.I)
 _REC_KEYS = ("rows", "records", "results", "data", "items", "documents", "hits")
 _ID_KEYS = ("id", "_id", "uuid", "pk", "key", "email", "user_id", "account_id")
 _ENUM_KEY = "exfil_lastids"

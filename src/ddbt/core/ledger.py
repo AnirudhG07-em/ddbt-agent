@@ -32,10 +32,22 @@ MAX_SCAN_CHARS = 200_000
 # ---- classification of a step by what it does to data flow ----
 
 # a step that sends data OUT of the trust boundary (the sink side of an exfil chain)
-EGRESS = re.compile(r"send|email|mail|post|put|upload|push|publish|share|export|curl|wget|"
-                    r"webhook|sync|transfer|sftp|scp|pay|wire|slack|discord|telegram|dns", re.I)
+EGRESS = re.compile(r"send|email|mail|post|put|upload|push|publish|share|export|curl|wget|webhook|sync|"
+                    r"transfer|sftp|scp|pay|wire|slack|discord|telegram|dns|message|notify|sms", re.I)
 # a step that brings data IN (the source side — where a secret or untrusted content enters)
 READ = re.compile(r"read|cat|get|fetch|open|load|grep|glob|ls|list|select|query|scan|head|tail", re.I)
+
+# ---- shared signal patterns (one definition, imported by the plugins) ----
+# secret material by PATH, by VALUE, and the file-name form to carry as an exfil marker.
+SECRET_PATH = re.compile(r"\.env\b|id_rsa|/\.ssh/|/\.aws/|credential|\bsecret\b|\.pem\b|private[_-]?key|"
+                         r"/etc/shadow|\.npmrc|\.netrc|\btoken\b|api[_-]?key", re.I)
+SECRET_VALUE = re.compile(r"BEGIN [A-Z ]*PRIVATE KEY|AKIA[0-9A-Z]{16}|sk-[A-Za-z0-9]{16,}|"
+                          r"xox[baprs]-[A-Za-z0-9-]+|gh[pousr]_[A-Za-z0-9]{20,}|eyJ[A-Za-z0-9_-]{10,}|"
+                          r"(?:password|passwd|api[_-]?key|secret)\s*[=:]\s*\S+", re.I)
+SECRET_FILE = re.compile(r"[\w./-]*(?:\.env|id_rsa|id_ed25519|credentials|\.pem|\.npmrc|\.netrc|shadow)[\w./-]*", re.I)
+# encode/compress/reformat steps whose output inherits its input's taint (the anti-obfuscation set).
+TRANSFORM = re.compile(r"base64|b64encode|gzip|gunzip|\bzip\b|\bxz\b|\btar\b|openssl|\bxxd\b|hexdump|"
+                       r"\bsplit\b|\btr\b|\brev\b|\biconv\b|\bjq\b|urlencode|\buuencode\b|\bzlib\b", re.I)
 
 # quantifiers are BOUNDED (DNS labels are <=63 chars, <=127 labels) so these stay linear — an
 # unbounded `+` before a required suffix backtracks O(n^2) on a long homogeneous payload (a DoS input).
@@ -107,6 +119,34 @@ def is_external(dest: str, trusted: tuple[str, ...]) -> bool:
     """A destination is external unless it is (or is under) a trusted domain."""
     dest = dest.lower()
     return not any(dest == t or dest.endswith("." + t) or dest.endswith(t) for t in trusted)
+
+
+# Minimal multi-label public suffixes so eTLD+1 is correct on the common shared platforms (a full PSL
+# snapshot is the next upgrade). Without these, evil.github.io collapses to github.io and would inherit
+# an allowlist entry it shouldn't. Extend via config {"net_filter": {"multi_suffixes": [...]}}.
+MULTI_SUFFIX = frozenset({
+    "co.uk", "org.uk", "gov.uk", "ac.uk", "co.jp", "com.au", "com.br", "co.in", "co.za", "com.cn",
+    "github.io", "gitlab.io", "herokuapp.com", "blogspot.com", "web.app", "firebaseapp.com",
+    "pages.dev", "workers.dev", "s3.amazonaws.com", "azurewebsites.net", "cloudfront.net", "netlify.app",
+})
+
+
+def registrable(host: str, multi: frozenset = MULTI_SUFFIX) -> str:
+    """eTLD+1 aware of multi-label suffixes (co.uk, github.io) — enough that shared-platform tenants
+    (evil.github.io) are distinct and list-matching isn't trivially bypassed. Not a full PSL."""
+    labels = host.strip(".").split(".")
+    if len(labels) <= 2:
+        return host
+    if ".".join(labels[-3:]) in multi:
+        return ".".join(labels[-4:]) if len(labels) >= 4 else host
+    if ".".join(labels[-2:]) in multi:
+        return ".".join(labels[-3:])
+    return ".".join(labels[-2:])
+
+
+def split_ident(name: str) -> str:
+    """BankManagerPayBill / bank_manager_pay_bill → 'Bank Manager Pay Bill' so \\b verb matches fire."""
+    return re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", re.sub(r"[_\-]+", " ", name))
 
 
 def decode_variants(s: str, depth: int = 2):

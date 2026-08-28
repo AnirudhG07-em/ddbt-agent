@@ -27,23 +27,14 @@ from __future__ import annotations
 import json
 import re
 
-from ddbt.core.ledger import (MAX_SCAN_CHARS, READ, TaintLabel, decode_variants, destinations, flatten,
+from ddbt.core.ledger import (EGRESS as _EGRESS, MAX_SCAN_CHARS, READ, SECRET_FILE as _SECRET_FILE,
+                              SECRET_PATH as _SECRET_PATH, SECRET_VALUE as _SECRET_VALUE,
+                              TRANSFORM as _TRANSFORM, TaintLabel, decode_variants, destinations, flatten,
                               is_external, max_token_entropy, shannon_entropy)
 from ddbt.plugins.base import Plugin, PluginContext, PreVerdict
 
 _KEY = "provenance_taint"
 
-_EGRESS = re.compile(r"send|email|mail|post|put|upload|push|publish|share|export|curl|wget|"
-                     r"webhook|sync|transfer|sftp|scp|pay|wire|slack|discord|telegram", re.I)
-_SECRET_PATH = re.compile(r"\.env\b|id_rsa|/\.ssh/|/\.aws/|credential|secret|\.pem\b|"
-                          r"private[_-]?key|/etc/shadow|\.npmrc|\.netrc|token", re.I)
-_SECRET_VALUE = re.compile(r"BEGIN [A-Z ]*PRIVATE KEY|AKIA[0-9A-Z]{16}|sk-[A-Za-z0-9]{16,}|"
-                           r"xox[baprs]-[A-Za-z0-9-]+|gh[pousr]_[A-Za-z0-9]{20,}|"
-                           r"eyJ[A-Za-z0-9_-]{10,}|(?:password|passwd|api[_-]?key|secret)\s*[=:]\s*\S+", re.I)
-_SECRET_FILE = re.compile(r"[\w./-]*(?:\.env|id_rsa|id_ed25519|credentials|\.pem|\.npmrc|\.netrc|shadow)[\w./-]*", re.I)
-# transform steps whose output inherits its input's taint (encode/compress/split/reformat)
-_TRANSFORM = re.compile(r"base64|b64encode|gzip|gunzip|\bzip\b|\bxz\b|\btar\b|openssl|\bxxd\b|hexdump|"
-                        r"\bsplit\b|\btr\b|\brev\b|\biconv\b|\bjq\b|urlencode|\buuencode\b|\bzlib\b", re.I)
 # sources that inject attacker-influenceable content (integrity axis)
 _UNTRUSTED_SRC = re.compile(r"webfetch|websearch|fetch|browse|crawl|http", re.I)
 

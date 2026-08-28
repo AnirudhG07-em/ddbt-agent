@@ -1,7 +1,7 @@
 """Plugin registry — build the enabled plugins from ddbt.json `"plugins"`.
 
 Config accepts a list of names or a {name: options} map, e.g.
-    "plugins": ["shell_deobfuscation", "dataflow_taint", "destructive_guard"]
+    "plugins": ["shell_deobfuscation", "provenance_taint", "destructive_guard"]
     "plugins": {"pii_dlp": {"min_entities": 2}}
 Unknown names are ignored; plugins that accept `trusted_domains` get them from the policy's
 email/web allow-lists so their "external destination" checks match the ticket.
@@ -12,7 +12,6 @@ from __future__ import annotations
 import inspect
 
 from ddbt.plugins.base import Plugin, PluginContext, PluginManager, PreVerdict
-from ddbt.plugins.dataflow_taint import DataflowTaint
 from ddbt.plugins.destructive_guard import DestructiveGuard
 from ddbt.plugins.exfil_budget import ExfilBudget
 from ddbt.plugins.killchain import KillChain
@@ -27,7 +26,6 @@ from ddbt.plugins.trajectory_score import TrajectoryScore
 
 REGISTRY = {
     "shell_deobfuscation": ShellDeobfuscation,
-    "dataflow_taint": DataflowTaint,          # legacy substring taint — superseded by provenance_taint
     "provenance_taint": ProvenanceTaint,      # trajectory taint: edge-propagation + decode-then-match
     "exfil_budget": ExfilBudget,              # low-and-slow: cumulative volume / chunk-count / beacon / db-coverage
     "net_filter": NetFilter,                  # egress control: destination-provenance / SSRF / exfil-service denylist

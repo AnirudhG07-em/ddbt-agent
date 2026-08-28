@@ -13,7 +13,6 @@ import json
 import os
 import sys
 import time
-from pathlib import Path
 
 from ddbt.core import chromatics
 from ddbt.core.engine import Effect, Engine
