@@ -16,6 +16,8 @@ import re
 
 from ddbt.plugins.base import Plugin, PluginContext, PreVerdict
 
+from ddbt.core.ledger import MAX_SCAN_CHARS
+
 _KEYS = ("command", "cmd", "script", "code", "sql", "query", "action", "value", "body", "instruction")
 
 # (regex, tactic, technique, verdict, short-why)
@@ -50,7 +52,7 @@ _SIGS: list[tuple[re.Pattern, str, str, str, str]] = [
     (re.compile(r"\b(mimikatz|lazagne|/etc/shadow|gcloud\s+auth\s+print|aws\s+configure\s+get\s+aws_secret|cat\s+.*(\.ssh/id_|\.aws/credentials|\.env))\b", re.I),
      "Credential Access", "T1552 Unsecured Credentials", "deny", "reads stored credentials/secrets"),
     # --- Exfiltration (TA0010) ---
-    (re.compile(r"\b(curl|wget)\b[^|;&]*(-d\s*@|--data-binary\s*@|-T\s)[^|;&]*https?://|transfer\.sh|pastebin\.com|\|\s*(nc|ncat)\s", re.I),
+    (re.compile(r"\b(curl|wget)\b[^|;&]{0,2000}(-d\s*@|--data-binary\s*@|-T\s)[^|;&]{0,2000}https?://|transfer\.sh|pastebin\.com|\|\s*(nc|ncat)\s", re.I),
      "Exfiltration", "T1567 Exfil Over Web Service", "deny", "sends file contents to an external service"),
     # --- Initial Access / Supply Chain (TA0001) ---
     (re.compile(r"\b(npm\s+publish|pip.*upload|twine\s+upload|curl\s+.*\|\s*(sudo\s+)?(ba)?sh)\b", re.I),
@@ -60,9 +62,11 @@ _SIGS: list[tuple[re.Pattern, str, str, str, str]] = [
 
 def _text(args) -> str:
     if isinstance(args, dict):
-        return " ".join(str(args[k]) for k in _KEYS if isinstance(args.get(k), str)) or \
+        blob = " ".join(str(args[k]) for k in _KEYS if isinstance(args.get(k), str)) or \
                " ".join(str(v) for v in args.values() if isinstance(v, str))
-    return str(args)
+    else:
+        blob = str(args)
+    return blob[:MAX_SCAN_CHARS]   # bound the scan (a huge arg must not stall the signature match)
 
 
 class MitreGuard(Plugin):

@@ -34,12 +34,15 @@ from __future__ import annotations
 import re
 
 # --- identifier extraction (mechanical parsing, not policy) ---
+# Quantifiers are BOUNDED where a `+`/`*` precedes a required char — an unbounded run before a
+# mandatory `@`/suffix backtracks O(n^2) on a long word-char payload (a DoS lever). Email local-parts
+# are <=64 chars and labels <=63, so these bounds never clip a real identifier.
 _PATTERNS = (
-    ("email", re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]*\w")),
-    ("url", re.compile(r"https?://[^\s<>\"')\]]+")),
+    ("email", re.compile(r"[\w.+-]{1,64}@[\w-]{1,63}\.[\w.-]{0,255}\w")),
+    ("url", re.compile(r"https?://[^\s<>\"')\]]{1,2048}")),
     ("path", re.compile(r"(?:~|\.{1,2})?/[\w.@~-]+(?:/[\w.@~-]+)*")),
-    ("phone", re.compile(r"\+\d[\d\s().-]{6,}\d")),
-    ("handle", re.compile(r"@[A-Za-z0-9_]{3,}")),
+    ("phone", re.compile(r"\+\d[\d\s().-]{6,64}\d")),
+    ("handle", re.compile(r"@[A-Za-z0-9_]{3,64}")),
 )
 # what may sit between identifiers and still count as a pure list of values ("a@x, b@y")
 _SEPARATORS = re.compile(r"^[\s,;|]*$")
@@ -57,6 +60,11 @@ def extract(value: str) -> list[tuple[str, str]]:
     "/evil.com/x". Without this the same bytes appear under several kinds and every
     downstream count is inflated.
     """
+    # bound the scan: the regexes are O(n) per pattern, so a multi-MB leaf (a big file read/arg) would
+    # stall the whole per-step decision. Identifiers past the cap into one leaf aren't worth extracting.
+    from ddbt.core.ledger import MAX_SCAN_CHARS
+    if len(value) > MAX_SCAN_CHARS:
+        value = value[:MAX_SCAN_CHARS]
     found: list[tuple[str, str]] = []
     claimed: list[tuple[int, int]] = []
     for kind, pat in _PATTERNS:

@@ -36,6 +36,7 @@ DEFAULTS = {
     "error_effect": "ask",     # judge infra failure → "ask" (human) or "deny" (fail-closed)
     "policy": None,            # inline capability ticket (the deterministic allow/deny floor)
     "behaviors": {},           # workspace semantic rules for the sift judge (NL or taxonomy) — no retrain
+    "trajectory_rules": [],    # P5 declarative cross-step DSL (see ddbt.plugins.policy_rules)
     "plugins": [],             # optional pluggable defenses (see ddbt.plugins) — names or {name: opts}
     "auth": {},                # the agent's own scoped credentials (scaffolding; doc/credentials.md)
 }
@@ -71,9 +72,20 @@ TEMPLATE = {
         ],
     },
 
-    # pluggable defenses, on by default (all deterministic + light). Remove any you don't want, or
-    # add "pii_dlp" (Presidio-backed egress PII check). See src/ddbt/plugins/.
-    "plugins": ["shell_deobfuscation", "dataflow_taint", "destructive_guard", "mitre_guard"],
+    # pluggable defenses, on by default. All deterministic + light EXCEPT net_semantic, which reuses
+    # the sift Model2Vec encoder for meaning-based egress review and is ASK-only (never denies alone).
+    # Remove any you don't want, or add "pii_dlp" (Presidio-backed egress PII check). See src/ddbt/plugins/.
+    "plugins": ["shell_deobfuscation", "provenance_taint", "exfil_budget", "net_filter", "net_semantic",
+                "killchain", "trajectory_score", "policy_rules", "destructive_guard", "mitre_guard"],
+
+    # P5 — declarative cross-step rules, evaluated by policy_rules against the whole session. Add your
+    # own freely; see src/ddbt/plugins/policy_rules.py for the full condition vocabulary.
+    "trajectory_rules": [
+        {"when": [{"tainted": True}, {"dest_external": True}], "then": "deny",
+         "reason": "a secret was read earlier this session and this step sends data to an external destination"},
+        {"when": [{"count": {"tool": "delete|destroy|remove|drop", "min": 5}}], "then": "ask",
+         "reason": "an unusual number of destructive actions this session"},
+    ],
 
     "policy": {
         "label": "ddbt assistant",
@@ -199,6 +211,14 @@ def behaviors(cwd: str | Path | None = None) -> dict:
     the deterministic grant. Empty {} → sift uses only its built-in catalog."""
     b = load(cwd).get("behaviors")
     return b if isinstance(b, dict) else {}
+
+
+def trajectory_rules(cwd: str | Path | None = None) -> list:
+    """The P5 declarative trajectory DSL: ddbt.json ``trajectory_rules`` — a list of
+    {"when": [...], "then": "deny"|"ask", "reason": "..."} evaluated by the policy_rules plugin
+    against the session's cross-step state. Empty when absent. See ddbt.plugins.policy_rules."""
+    r = load(cwd).get("trajectory_rules")
+    return r if isinstance(r, list) else []
 
 
 def grant_spec(cwd: str | Path | None = None):

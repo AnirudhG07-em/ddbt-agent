@@ -438,11 +438,18 @@ class Engine:
         if isinstance(tool_response, dict):
             inner = tool_response.get("content") or tool_response.get("output") or tool_response.get("stdout")
             payload = tool_response if inner is None else inner
-        # PLUGIN observe — let dataflow-taint mark a secret read for the cross-call exfil check
+        # PLUGIN observe — let dataflow/provenance taint mark a secret read for the cross-call check
         if self.plugins:
             from ddbt.plugins.base import PluginContext
             self.plugins.observe(tool_name, tool_input, payload,
                                  PluginContext(session_id=self.session_id, goal=self.goal, store=self.store))
+        # TRAJECTORY LEDGER — record the confirmed step so cross-step detectors can score the history.
+        # Always-on core infra (like the audit/quarantine/provenance index); best-effort.
+        try:
+            from ddbt.core.ledger import Ledger
+            Ledger(self.store).record(tool_name, tool_input, payload)
+        except Exception:  # noqa: BLE001 — telemetry must never break a tool call
+            pass
         try:
             rows = provenance.index_response(payload)
         except Exception:  # indexing is best-effort; never break a tool call over it

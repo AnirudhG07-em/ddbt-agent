@@ -25,9 +25,41 @@
   },
   "plugins": [
     "shell_deobfuscation",
-    "dataflow_taint",
+    "provenance_taint",
+    "exfil_budget",
+    "net_filter",
+    "net_semantic",
+    "killchain",
+    "trajectory_score",
+    "policy_rules",
     "destructive_guard",
     "mitre_guard"
+  ],
+  "trajectory_rules": [
+    {
+      "when": [
+        {
+          "tainted": true
+        },
+        {
+          "dest_external": true
+        }
+      ],
+      "then": "deny",
+      "reason": "a secret was read earlier this session and this step sends data to an external destination"
+    },
+    {
+      "when": [
+        {
+          "count": {
+            "tool": "delete|destroy|remove|drop",
+            "min": 5
+          }
+        }
+      ],
+      "then": "ask",
+      "reason": "an unusual number of destructive actions this session"
+    }
   ],
   "policy": {
     "label": "ddbt assistant",

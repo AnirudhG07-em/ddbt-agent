@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import re
 
+from ddbt.core.ledger import MAX_SCAN_CHARS
 from ddbt.plugins.base import Plugin
 
 _SHELL_KEYS = ("command", "cmd", "script", "code", "value")
@@ -40,14 +41,18 @@ def _strip_ansi_c(s: str) -> str:
     return _ANSI_C.sub(repl, s)
 
 
+_QUOTED = re.compile(r"""(['"])(.*?)\1""")
+
+
 def _join_adjacent_quotes(s: str) -> str:
-    # collapse quoted fragments that touch: 'r''m' -rf → rm -rf
+    # collapse quoted fragments that touch: 'r''m' -rf → rm -rf. Match AT position (no slicing) so
+    # this stays linear — the old s[i:] slice made it O(n^2), a DoS lever on a long crafted command.
     out, i, n = [], 0, len(s)
     while i < n:
-        m = re.match(r"""(['"])(.*?)\1""", s[i:])
+        m = _QUOTED.match(s, i)
         if m:
             out.append(m.group(2))
-            i += m.end()
+            i += m.end() - m.start()
         else:
             out.append(s[i])
             i += 1
@@ -68,8 +73,8 @@ def _inline_cmdsub(s: str) -> str:
 
 def deobfuscate(cmd: str) -> str:
     """Best-effort, idempotent-ish rewrite exposing hidden shell intent. Text only, never executed."""
-    if not cmd:
-        return cmd
+    if not cmd or len(cmd) > MAX_SCAN_CHARS:
+        return cmd   # a genuine obfuscated command is short; skip huge inputs (DoS guard)
     s = _strip_ansi_c(cmd)
     s = _hex_and_oct(s)
     s = _join_adjacent_quotes(s)

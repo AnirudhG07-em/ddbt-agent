@@ -123,6 +123,24 @@ def _cmd_prepare(args: argparse.Namespace) -> int:
         return rc
     print("✓ sift judge ready → sift/models/sift_judge.joblib")
     print("  ddbt now decides with sift by default (set DDBT_JUDGE=llm or ddbt.json \"judge\":\"llm\" to use the LLM).")
+
+    # warm the net_semantic centroid cache so the first guarded egress is fast (<50ms, no rebuild).
+    try:
+        from ddbt.judge.embedder import get_encoder
+        from ddbt.plugins.net_semantic import NetSemantic
+        enc = get_encoder()
+        if enc is not None and NetSemantic()._ensure_centroids(enc):
+            print("✓ net_semantic centroids cached (semantic egress review ready)")
+    except Exception:  # noqa: BLE001 — optional; the plugin rebuilds on first use if this is skipped
+        pass
+
+    # optional: report the calibration of the semantic egress thresholds (held-out + LOCO generalization).
+    if getattr(args, "calibrate", False):
+        cal = next((up / "bench" / "calibrate_net_semantic.py" for up in here.parents
+                    if (up / "bench" / "calibrate_net_semantic.py").is_file()), None)
+        if cal is not None:
+            print("\n→ net_semantic calibration report:")
+            subprocess.call([sys.executable, str(cal)], cwd=str(cal.parent.parent))
     return 0
 
 
@@ -236,6 +254,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     prep = sub.add_parser("prepare", help="train the non-LLM sift judge model (one-time)")
     prep.add_argument("--encoder", default="model2vec", choices=["model2vec", "minilm", "hashing"])
+    prep.add_argument("--calibrate", action="store_true",
+                      help="also report net_semantic egress-review calibration (held-out + leave-one-category-out)")
     prep.set_defaults(fn=_cmd_prepare)
 
     h = sub.add_parser("hook", help="hook entrypoint (used by Claude Code)")

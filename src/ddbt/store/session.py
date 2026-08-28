@@ -56,6 +56,22 @@ class SessionStore:
                 tool TEXT NOT NULL, path TEXT NOT NULL, origin TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_prov_value ON provenance(value);
+            -- The TRAJECTORY LEDGER: one confirmed-executed step per row, the cheap tabular form of
+            -- the "session action graph" the provenance-IDS / DLP literature scores over (Holmes,
+            -- UNICORN, fraud-detection trajectory features). Every trajectory detector is a VIEW over
+            -- this table; recorded by the engine on record_result so it reflects steps that ran.
+            --   direction: 'egress' (data leaves) | 'read' (data enters) | 'other'
+            --   destination: host / email domain / db endpoint the step reaches ('' if none)
+            --   n_bytes/entropy: over the OUTBOUND payload for egress, the INBOUND content for reads
+            --   extra: JSON — taint labels, secret markers, mitre hits, db row-ids (detector-specific)
+            CREATE TABLE IF NOT EXISTS ledger (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts REAL NOT NULL, step INTEGER NOT NULL, tool TEXT NOT NULL,
+                direction TEXT NOT NULL, destination TEXT NOT NULL DEFAULT '',
+                n_bytes INTEGER NOT NULL DEFAULT 0, entropy REAL NOT NULL DEFAULT 0.0,
+                extra TEXT NOT NULL DEFAULT '{}'
+            );
+            CREATE INDEX IF NOT EXISTS idx_ledger_dest ON ledger(destination);
             """
         )
 
@@ -164,6 +180,38 @@ class SessionStore:
 
     def quarantine_count(self) -> int:
         return int(self._conn.execute("SELECT COUNT(*) AS n FROM quarantine").fetchone()["n"])
+
+    # ---- trajectory ledger: one confirmed-executed step per row ----
+
+    def append_ledger(self, row: dict) -> int:
+        """Append a confirmed step. `row` keys: step, tool, direction, destination, n_bytes,
+        entropy, extra(dict). Missing keys default. `extra` is JSON-serialized."""
+        cur = self._conn.execute(
+            "INSERT INTO ledger(ts,step,tool,direction,destination,n_bytes,entropy,extra) "
+            "VALUES(?,?,?,?,?,?,?,?)",
+            (time.time(), int(row.get("step", 0)), str(row.get("tool", "")),
+             str(row.get("direction", "other")), str(row.get("destination", "")),
+             int(row.get("n_bytes", 0)), float(row.get("entropy", 0.0)),
+             json.dumps(row.get("extra", {}), default=str)),
+        )
+        return int(cur.lastrowid)
+
+    def read_ledger(self) -> list[dict]:
+        """Every ledger row, oldest first, with `extra` merged back into the dict."""
+        rows = self._conn.execute(
+            "SELECT ts,step,tool,direction,destination,n_bytes,entropy,extra FROM ledger ORDER BY id"
+        ).fetchall()
+        out = []
+        for r in rows:
+            d = {"ts": r["ts"], "step": r["step"], "tool": r["tool"], "direction": r["direction"],
+                 "destination": r["destination"], "n_bytes": r["n_bytes"], "entropy": r["entropy"]}
+            try:
+                extra = json.loads(r["extra"]) if r["extra"] else {}
+            except (ValueError, TypeError):
+                extra = {}
+            d["extra"] = extra if isinstance(extra, dict) else {}
+            out.append(d)
+        return out
 
     def close(self) -> None:
         self._conn.close()

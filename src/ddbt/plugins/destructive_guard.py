@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 
+from ddbt.core.ledger import MAX_SCAN_CHARS
 from ddbt.plugins.base import Plugin, PluginContext, PreVerdict
 
 # (pattern, human reason, safer suggestion or None)
@@ -22,13 +23,13 @@ _RULES: list[tuple[re.Pattern, str, str | None]] = [
      "writes directly to a block device (data destruction)", None),
     (re.compile(r"\bDROP\s+(DATABASE|SCHEMA)\b", re.I),
      "drops an entire database/schema", "back up first, or drop a specific table with a WHERE-scoped migration"),
-    (re.compile(r"\bTRUNCATE\s+TABLE\b|\bDELETE\s+FROM\b[^;]*\b(WHERE\s+1\s*=\s*1|$)", re.I),
+    (re.compile(r"\bTRUNCATE\s+TABLE\b|\bDELETE\s+FROM\b[^;]{0,2000}\b(WHERE\s+1\s*=\s*1|$)", re.I),
      "deletes all rows from a table", "add a specific WHERE clause and take a backup"),
     (re.compile(r"\bgit\s+push\b.*(--force|-f)\b", re.I),
      "force-push rewrites shared history", "push without --force, or use --force-with-lease on a personal branch"),
     (re.compile(r"\bchmod\s+-R?\s*777\b", re.I),
      "world-writable permissions", "use 755 for dirs / 644 for files"),
-    (re.compile(r"\bcurl\b[^|]*\|\s*(sudo\s+)?(ba)?sh\b|\bwget\b[^|]*\|\s*(ba)?sh\b", re.I),
+    (re.compile(r"\bcurl\b[^|]{0,2000}\|\s*(sudo\s+)?(ba)?sh\b|\bwget\b[^|]{0,2000}\|\s*(ba)?sh\b", re.I),
      "pipes a remote script straight into a shell", "download first, inspect, then run: curl -o s.sh URL && cat s.sh && bash s.sh"),
     (re.compile(r":\(\)\s*\{\s*:\|:&\s*\}\s*;", ),
      "fork bomb", None),
@@ -39,8 +40,8 @@ _TEXT_KEYS = ("command", "cmd", "script", "code", "sql", "query", "value")
 
 def _text(args: dict) -> str:
     if not isinstance(args, dict):
-        return str(args)
-    return " ".join(str(args[k]) for k in _TEXT_KEYS if isinstance(args.get(k), str))
+        return str(args)[:MAX_SCAN_CHARS]
+    return " ".join(str(args[k]) for k in _TEXT_KEYS if isinstance(args.get(k), str))[:MAX_SCAN_CHARS]
 
 
 class DestructiveGuard(Plugin):
