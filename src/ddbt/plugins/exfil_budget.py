@@ -81,6 +81,7 @@ def _record_ids(result) -> set[str]:
 
 class ExfilBudget(Plugin):
     name = "exfil_budget"
+    headline = "A lot of data is trickling out — this looks like slow data theft."
 
     def __init__(self, trusted_domains: tuple[str, ...] = (), soft_bytes: int = 200_000,
                  hard_bytes: int = 2_000_000, soft_calls: int = 5, hard_calls: int = 25,

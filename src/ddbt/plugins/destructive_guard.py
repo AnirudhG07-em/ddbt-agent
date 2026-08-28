@@ -46,6 +46,7 @@ def _text(args: dict) -> str:
 
 class DestructiveGuard(Plugin):
     name = "destructive_guard"
+    headline = "This command could irreversibly destroy data."
 
     def _match(self, args: dict):
         blob = _text(args)

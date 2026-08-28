@@ -25,6 +25,7 @@ _HIGH_RISK = re.compile(r"send|email|mail|post|upload|push|curl|wget|transfer|pa
 
 class TrajectoryScore(Plugin):
     name = "trajectory_score"
+    headline = "This session's behaviour is looking risky overall."
 
     def __init__(self, trusted_domains: tuple[str, ...] = (), ask: float = 0.4, deny: float = 0.7,
                  window: int = 5, gap_window: int = 4, goal_drift: bool = True):

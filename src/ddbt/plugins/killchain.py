@@ -51,6 +51,7 @@ def _stages(tool: str, text: str, external_egress: bool) -> set[str]:
 
 class KillChain(Plugin):
     name = "killchain"
+    headline = "These steps together look like a multi-stage attack."
 
     def __init__(self, trusted_domains: tuple[str, ...] = ()):
         self.trusted = tuple(d.lower() for d in trusted_domains)

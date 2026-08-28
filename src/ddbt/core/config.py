@@ -43,7 +43,7 @@ DEFAULTS = {
     "rulesets": [],            # names of REUSABLE rule-packs in ~/.ddbt/rules/<name>/ to fold in (additive)
     "llm": {"provider": None, "model": None, "max_requests": 4},  # AUTHORING LLM (ddbt create-rules) — never runtime
     "trajectory_rules": [],    # P5 declarative cross-step DSL (see ddbt.plugins.policy_rules)
-    "plugins": [],             # optional pluggable defenses (see ddbt.plugins) — names or {name: opts}
+    "plugins": list(_DEFAULT_PLUGINS),  # ALL defenses on by default — even with no ddbt.json present
     "auth": {},                # the agent's own scoped credentials (scaffolding; doc/credentials.md)
 }
 

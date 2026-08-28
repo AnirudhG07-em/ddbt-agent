@@ -46,6 +46,7 @@ def _rx(pattern: str):
 
 class PolicyRules(Plugin):
     name = "policy_rules"
+    headline = "This breaks one of your workspace rules."
 
     def __init__(self, rules=None, trusted_domains: tuple[str, ...] = ()):
         self.trusted = tuple(d.lower() for d in trusted_domains)

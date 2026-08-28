@@ -7,8 +7,8 @@ arXiv:2504.11168) on the action-level data available in this checkout: the synth
 plus InjecAgent when its data is present. It then fits a calibrator and conformal DENY/ASK bands on a
 held-out split, and joblib-dumps everything to models/sift_judge.joblib.
 
-    uv run --no-project --with numpy --with scikit-learn --with "model2vec[train]" \
-        --with sentence-transformers --with datasets python train_sift.py --encoder model2vec
+    uv run --no-project --with numpy --with scikit-learn --with model2vec \
+        python train_sift.py --encoder model2vec           # torch-free: static-embed inference + sklearn
 
 HONEST NOTE: trained on synth + InjecAgent, this is a working PROTOTYPE judge. Production quality
 needs distillation — running the existing LLM judge over a real action log to get multi-task labels

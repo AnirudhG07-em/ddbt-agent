@@ -111,6 +111,7 @@ def _ssrf_hit(host: str) -> str | None:
 
 class NetFilter(Plugin):
     name = "net_filter"
+    headline = "Data is heading to a risky or attacker-controlled destination."
 
     def __init__(self, trusted_domains: tuple[str, ...] = (), exfil_services=(), allow_hosts=(),
                  multi_suffixes=(), provenance_gate: bool = True, block_ssrf: bool = True,

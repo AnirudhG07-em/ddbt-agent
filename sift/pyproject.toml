@@ -10,12 +10,14 @@ authors = [{ name = "Anirudh Gupta" }]
 dependencies = ["numpy>=1.26", "scikit-learn>=1.4"]
 
 [project.optional-dependencies]
-# the real ≤100 MB, non-SLM static encoder (potion-base-32M) + minilm base for SetFit
-embed = ["model2vec>=0.3", "sentence-transformers>=3.0"]
-# methods that fine-tune the embedding itself. SetFit is implemented directly on
-# sentence-transformers (no fragile `setfit` wheel), so only these two are needed.
-finetune = ["sentence-transformers>=3.0", "model2vec[train]>=0.3"]
-all = ["model2vec[train]>=0.3", "sentence-transformers>=3.0", "datasets>=2.19", "accelerate>=1.1"]
+# The DEPLOYED encoder: potion-base-32M static embeddings. Inference is a token→vector lookup
+# (numpy + safetensors) — NO PyTorch. This is all `ddbt prepare` and the runtime judge need.
+embed = ["model2vec>=0.3"]
+# EXPERIMENTAL ONLY (bake-off / distillation). These pull PyTorch via sentence-transformers and
+# model2vec[train] — NOT needed for the deployed model2vec fusion judge. Install only to reproduce
+# the encoder bake-off or distill a new static model.
+experimental = ["sentence-transformers>=3.0", "model2vec[train]>=0.3", "datasets>=2.19", "accelerate>=1.1"]
+finetune = ["sentence-transformers>=3.0", "model2vec[train]>=0.3"]   # alias, kept for older scripts
 
 [build-system]
 requires = ["hatchling"]

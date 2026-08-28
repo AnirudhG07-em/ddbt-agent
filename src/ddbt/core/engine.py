@@ -78,14 +78,18 @@ class Decision:
         return self.effect in (Effect.ASK, Effect.ASK_OVERRIDE)
 
     def to_dict(self) -> dict:
+        """The integration contract — a stable, machine-readable decision. `effect` is the key field:
+        'allow' | 'ask' | 'deny' | 'ask_override'. On a sanitize-allow, `rewritten_input` holds the
+        redacted args to run INSTEAD of the caller's. `reason` leads with a plain-language headline."""
         return {
-            "effect": self.effect.value,
-            "decision": self.state,
-            "reason": self.reason,
-            "relevant": self.relevant,
-            "harmful": self.harmful,
-            "stray": self.stray,
-            "risk": self.risk,
+            "effect": self.effect.value,            # allow | ask | deny | ask_override
+            "reason": self.reason,                  # human-readable (plugin headline + detail)
+            "layer": self.checkpoint,               # which gate decided: "plugin:net_filter", "judge", "out-of-scope", …
+            "overridable": self.overridable,        # can a human force it? (False only for a hard DENY)
+            "danger": self.danger,                  # ask_override — a downgraded block; warn loudly
+            "needs_confirmation": self.needs_confirmation,
+            "risk": self.risk,                      # telemetry band: none | low | med | high
+            "rewritten_input": self.rewritten_input,  # sanitize: redacted args to run instead, else null
         }
 
 
@@ -247,7 +251,8 @@ class Engine:
             pv = self.plugins.pre_check(tool_name, tool_input, pctx)
             if pv is not None and pv.effect == "deny":
                 self.store.increment_meta("suspicion", 3)
-                base = pv.reason + (f" — try: {pv.suggestion}" if pv.suggestion else "")
+                lead = (pv.headline + " ") if pv.headline else ""
+                base = lead + pv.reason + (f" — try: {pv.suggestion}" if pv.suggestion else "")
                 effect, reason = self._as_deny(base, f"plugin:{pv.plugin}")
                 aid = self.audit.decision(checkpoint=f"plugin:{pv.plugin}", state=effect.value, tool=tool_name,
                                           summary=_summarize(tool_name, tool_input), reason=reason,
@@ -258,9 +263,10 @@ class Engine:
             if pv is not None and pv.effect == "sanitize" and isinstance(pv.rewrite, dict):
                 # redact-and-send: the payload is cleaned, the destination was already in scope → allow
                 # the action with the redacted args (the caller runs Decision.rewritten_input).
+                reason = ((pv.headline + " ") if pv.headline else "") + pv.reason
                 aid = self.audit.decision(checkpoint=f"plugin:{pv.plugin}", state="allow", tool=tool_name,
-                                          summary=_summarize(tool_name, pv.rewrite), reason=pv.reason)
-                return Decision(Effect.ALLOW, "allow", f"plugin:{pv.plugin}", pv.reason,
+                                          summary=_summarize(tool_name, pv.rewrite), reason=reason)
+                return Decision(Effect.ALLOW, "allow", f"plugin:{pv.plugin}", reason,
                                 risk=chromatics.classify("allow", "grant-fastpath", True, False, False, who),
                                 audit_id=aid, rewritten_input=pv.rewrite)
             if pv is not None and pv.effect == "ask":
@@ -285,7 +291,9 @@ class Engine:
         # a plugin ASK-floor escalates an otherwise-ALLOW step to a human check
         if plugin_floor is not None and effect is Effect.ALLOW:
             effect, checkpoint = Effect.ASK, f"plugin:{plugin_floor.plugin}"
-            verdict.reason = f"{plugin_floor.reason} · {verdict.reason}" if verdict.reason else plugin_floor.reason
+            lead = (plugin_floor.headline + " ") if plugin_floor.headline else ""
+            verdict.reason = (f"{lead}{plugin_floor.reason} · {verdict.reason}"
+                              if verdict.reason else f"{lead}{plugin_floor.reason}")
         # deny_mode="override" → a judge/combine DENY becomes an overridable, loudly-warned ASK_OVERRIDE
         reason = verdict.reason
         if effect is Effect.DENY:

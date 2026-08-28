@@ -39,12 +39,16 @@ class PreVerdict:
     plugin: str
     suggestion: str | None = None
     rewrite: dict | None = None   # for "sanitize": the redacted args to run instead of the original
+    headline: str = ""            # plain, user-facing "what this means for you" (from the plugin)
 
 
 class Plugin:
     """Base class — subclass and override the hooks you use. All default to no-ops."""
 
     name = "plugin"
+    # a plain-language, user-facing summary of what THIS plugin firing means (not the technical reason).
+    # Shown alongside the detailed reason so a non-expert understands the risk. Override per plugin.
+    headline = ""
 
     def normalize(self, tool: str, args: dict) -> dict:
         return args
@@ -90,6 +94,8 @@ class PluginManager:
             except Exception:  # noqa: BLE001
                 v = None
             if v and (worst is None or _SEVERITY.get(v.effect, 0) > _SEVERITY.get(worst.effect, 0)):
+                if not v.headline:
+                    v.headline = p.headline           # attach the producing plugin's plain-language message
                 worst = v
         return worst
 

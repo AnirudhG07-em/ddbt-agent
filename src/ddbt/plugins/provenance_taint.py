@@ -54,6 +54,7 @@ def _secret_tokens(blob: str) -> set[str]:
 
 class ProvenanceTaint(Plugin):
     name = "provenance_taint"
+    headline = "A secret read earlier this session may be leaving your machine."
 
     def __init__(self, trusted_domains: tuple[str, ...] = ()):
         self.trusted = tuple(d.lower() for d in trusted_domains)

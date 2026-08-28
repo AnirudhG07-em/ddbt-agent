@@ -41,8 +41,14 @@ def _cmd_install(args: argparse.Namespace) -> int:
     if args.intent:
         print(f"✓ blind intent judge ENABLED (model: {args.intent_model})")
         print("  → ensure ANTHROPIC_API_KEY is set in the environment you launch Claude Code from.")
-    print("  Next: `ddbt prepare` (one-time) to build the local sift judge model.")
-    print('        Teach ddbt a new tool:  ddbt create-rules "notion-cli"   (LLM-drafts good/bad, applies live — no retrain).')
+    # build the general (non-LLM) judge layer now if it isn't present — no separate `prepare` step.
+    if not args.no_prepare:
+        if _sift_model_path() is not None:
+            print("✓ local judge model already present (shared across projects)")
+        else:
+            print("→ no local judge model yet — building it (one-time, torch-free) …")
+            _build_model("model2vec")   # best-effort; ddbt still runs (LLM/hashing fallback) if it fails
+    print('  Teach ddbt a new tool:  ddbt create-rules "notion-cli"   (LLM-drafts good/bad, applies live — no retrain).')
     print("  Restart Claude Code in this project for hooks to take effect.")
     return 0
 
@@ -195,33 +201,80 @@ def _cmd_rules(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_prepare(args: argparse.Namespace) -> int:
-    """Train the non-LLM sift judge model (one-time). Workspace `behaviors` in ddbt.json need NO
-    training — this only builds the base malicious-classifier artifact the judge loads."""
+def _cmd_check(args: argparse.Namespace) -> int:
+    """Language-agnostic guard: read a tool call as JSON on stdin, print the Decision as JSON on stdout.
+    stdin:  {"session_id","cwd","tool","args",{"goal"?}}   stdout: Decision.to_dict()
+    exit code: 0=allow  1=deny  2=ask/ask_override  (so any shell can branch on $?). Session state
+    persists on disk by session_id, so per-call subprocesses accumulate the cross-step view.
+    For a hot loop, prefer the in-process `from ddbt import Guard` (avoids reloading the model each call)."""
+    import json
+
+    from ddbt import Guard
+    p = json.loads(sys.stdin.read() or "{}")
+    guard = Guard(p.get("session_id", "default"), cwd=p.get("cwd") or ".")
+    if p.get("goal"):
+        guard.goal(p["goal"])
+    d = guard.check(p.get("tool", ""), p.get("args") or {})
+    guard.close()
+    print(json.dumps(d.to_dict()))
+    return {"allow": 0, "deny": 1, "ask": 2, "ask_override": 2}.get(d.effect.value, 0)
+
+
+def _cmd_record(args: argparse.Namespace) -> int:
+    """Feed a completed step back in. stdin: {"session_id","cwd","tool","args","result"}."""
+    import json
+
+    from ddbt import Guard
+    p = json.loads(sys.stdin.read() or "{}")
+    guard = Guard(p.get("session_id", "default"), cwd=p.get("cwd") or ".")
+    guard.record(p.get("tool", ""), p.get("args") or {}, p.get("result"))
+    guard.close()
+    return 0
+
+
+def _cmd_screen(args: argparse.Namespace) -> int:
+    """Redact secrets/PII from text BEFORE a model sees it. stdin: raw text; stdout: JSON
+    {sensitive, redacted, findings, effect}. exit 2 if sensitive (so a shell can gate), else 0."""
+    import json
+
+    from ddbt import screen_text
+    s = screen_text(sys.stdin.read())
+    print(json.dumps({"sensitive": s.sensitive, "redacted": s.redacted,
+                      "findings": s.findings, "effect": s.effect, "reason": s.reason}))
+    return 2 if s.sensitive else 0
+
+
+def _sift_model_path():
+    """Path to the trained sift artifact if it exists, else None (the 'general layer')."""
+    import pathlib
+    here = pathlib.Path(__file__).resolve()
+    return next((up / "sift" / "models" / "sift_judge.joblib" for up in here.parents
+                 if (up / "sift" / "models" / "sift_judge.joblib").is_file()), None)
+
+
+def _build_model(encoder: str = "model2vec", calibrate: bool = False) -> int:
+    """Build the general (non-LLM) sift judge: torch-free — model2vec static-embed inference + a
+    scikit-learn head. Downloads potion-base-32M once (~130MB) via huggingface_hub; no PyTorch."""
     import pathlib
     import subprocess
 
-    # locate the sibling sift project (sift/train_sift.py)
     here = pathlib.Path(__file__).resolve()
     train = next((up / "sift" / "train_sift.py" for up in here.parents
                   if (up / "sift" / "train_sift.py").is_file()), None)
     if train is None:
         print("✗ could not find sift/train_sift.py (is the sift/ project present?)")
         return 1
-    print(f"→ training the sift judge model (encoder={args.encoder}) …")
-    print("  (workspace behaviors in ddbt.json need no training — this is the base model only)")
+    print(f"→ building the local judge model (encoder={encoder}, torch-free) …")
     try:
-        rc = subprocess.call([sys.executable, str(train), "--encoder", args.encoder], cwd=str(train.parent))
+        rc = subprocess.call([sys.executable, str(train), "--encoder", encoder], cwd=str(train.parent))
     except OSError as exc:
         print(f"✗ failed to launch training: {exc}")
         return 1
     if rc != 0:
-        print("\n✗ training failed. If it's a missing dependency, reinstall the project deps:")
-        print("    uv pip install -e .      (numpy, scikit-learn, model2vec, joblib are core)")
+        print("\n✗ build failed. If a dependency is missing, the core set is torch-free:")
+        print("    uv pip install numpy scikit-learn model2vec joblib      (NO PyTorch needed)")
         return rc
     print("✓ sift judge ready → sift/models/sift_judge.joblib")
-    print("  ddbt now decides with sift by default (set DDBT_JUDGE=llm or ddbt.json \"judge\":\"llm\" to use the LLM).")
-
     # warm the net_semantic centroid cache so the first guarded egress is fast (<50ms, no rebuild).
     try:
         from ddbt.judge.embedder import get_encoder
@@ -229,17 +282,21 @@ def _cmd_prepare(args: argparse.Namespace) -> int:
         enc = get_encoder()
         if enc is not None and NetSemantic()._ensure_centroids(enc):
             print("✓ net_semantic centroids cached (semantic egress review ready)")
-    except Exception:  # noqa: BLE001 — optional; the plugin rebuilds on first use if this is skipped
+    except Exception:  # noqa: BLE001 — optional; the plugin rebuilds on first use if skipped
         pass
-
-    # optional: report the calibration of the semantic egress thresholds (held-out + LOCO generalization).
-    if getattr(args, "calibrate", False):
+    if calibrate:
         cal = next((up / "bench" / "calibrate_net_semantic.py" for up in here.parents
                     if (up / "bench" / "calibrate_net_semantic.py").is_file()), None)
         if cal is not None:
             print("\n→ net_semantic calibration report:")
             subprocess.call([sys.executable, str(cal)], cwd=str(cal.parent.parent))
     return 0
+
+
+def _cmd_prepare(args: argparse.Namespace) -> int:
+    """(Re)build the non-LLM sift judge model. Usually not needed by hand — `ddbt install` builds it
+    automatically if the general layer is missing. Workspace behaviors/rulesets need NO training."""
+    return _build_model(args.encoder, getattr(args, "calibrate", False))
 
 
 def _cmd_bench(args: argparse.Namespace) -> int:
@@ -338,6 +395,8 @@ def build_parser() -> argparse.ArgumentParser:
     install_p.add_argument("--intent-model", default="claude-haiku-4-5", help="model for the intent judge")
     install_p.add_argument("--in-project", action="store_true",
                            help="write a committable ./ddbt.json instead of the out-of-band per-project config")
+    install_p.add_argument("--no-prepare", action="store_true",
+                           help="don't auto-build the local judge model (build later with `ddbt prepare`)")
     install_p.set_defaults(fn=_cmd_install)
     _proj(sub.add_parser("uninstall", help="remove Claude Code hooks")).set_defaults(fn=_cmd_uninstall)
     _proj(sub.add_parser("trust", help="baseline config for Boundary 0")).set_defaults(fn=_cmd_trust)
@@ -370,6 +429,11 @@ def build_parser() -> argparse.ArgumentParser:
     dr.set_defaults(fn=_cmd_disable_rules)
 
     _proj(sub.add_parser("rules", help="list reusable rule-packs (~/.ddbt/rules/)")).set_defaults(fn=_cmd_rules)
+
+    # language-agnostic integration: pipe JSON in, get a decision JSON out (see `ddbt <cmd> -h`)
+    sub.add_parser("check", help="judge a tool call: stdin JSON {session_id,cwd,tool,args,goal?} → Decision JSON; exit 0/1/2 = allow/deny/ask").set_defaults(fn=_cmd_check)
+    sub.add_parser("record", help="record a completed step: stdin JSON {session_id,cwd,tool,args,result}").set_defaults(fn=_cmd_record)
+    sub.add_parser("screen", help="redact secrets/PII from stdin text → JSON {sensitive,redacted,findings}; exit 2 if sensitive").set_defaults(fn=_cmd_screen)
 
     prep = sub.add_parser("prepare", help="train the non-LLM sift judge model (one-time)")
     prep.add_argument("--encoder", default="model2vec", choices=["model2vec", "minilm", "hashing"])

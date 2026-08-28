@@ -87,6 +87,7 @@ _PUBLIC = [
 
 class NetSemantic(Plugin):
     name = "net_semantic"
+    headline = "Something that looks sensitive is about to leave the workspace."
 
     # Defaults are CALIBRATED, not guessed — bench/calibrate_net_semantic.py, chosen by 5-fold CV
     # (Fβ=2, recall-weighted) on a held-out egress set with out-of-distribution + MITRE groups:

@@ -47,6 +47,7 @@ def _luhn_ok(num: str) -> bool:
 
 class PiiDlp(Plugin):
     name = "pii_dlp"
+    headline = "Personal info (names, emails, SSNs, cards) may be leaking out."
 
     def __init__(self, min_entities: int = 1, trusted_domains: tuple[str, ...] = (), mode: str = "sanitize"):
         # mode: "ask" (confirm with a human) | "sanitize" (redact PII, then send) | "deny" (block)

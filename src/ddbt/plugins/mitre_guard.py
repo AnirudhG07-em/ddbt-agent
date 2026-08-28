@@ -71,6 +71,7 @@ def _text(args) -> str:
 
 class MitreGuard(Plugin):
     name = "mitre_guard"
+    headline = "This matches a known attack technique."
 
     def _match(self, args) -> tuple | None:
         blob = _text(args)
