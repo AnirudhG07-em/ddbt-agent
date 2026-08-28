@@ -34,8 +34,10 @@ class SessionStore:
         self.path = self.dir / "store.db"
         self._conn = sqlite3.connect(self.path, timeout=30, isolation_level=None)
         self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA journal_mode=WAL")
+        # busy_timeout FIRST: the WAL-mode switch needs a brief exclusive lock, so under concurrent
+        # opens (parallel hooks) it must WAIT, not error with "database is locked".
         self._conn.execute("PRAGMA busy_timeout=30000")
+        self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);

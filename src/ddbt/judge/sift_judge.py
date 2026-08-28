@@ -53,11 +53,17 @@ class SiftJudge:
                 if (up / "sift" / "sift" / "serve.py").is_file():
                     sys.path.insert(0, str(up / "sift"))
                     break
+            from sift.data import behaviors as _beh
             from sift.serve import SiftScorer
+
+            from ddbt.core import config as _cfg
             scorer = SiftScorer(artifact_path) if artifact_path else SiftScorer.find()
             if not scorer:
                 return None
-            scorer.load_behaviors(cwd or ".")   # workspace deny/allow rules — no retrain
+            # route the LAYERED, folded config through (out-of-band + in-project + referenced rulesets),
+            # not a raw ddbt.json read — so `ddbt create-rules` packs actually reach the judge. No retrain.
+            deny, allow = _beh.parse(_cfg.behaviors(cwd))
+            scorer.set_behaviors(deny, allow)
             return cls(scorer)
         except Exception:
             return None

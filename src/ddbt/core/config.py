@@ -17,6 +17,7 @@ Precedence for any setting:  env var  >  ddbt.json  >  built-in default.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from functools import lru_cache
@@ -36,6 +37,8 @@ DEFAULTS = {
     "error_effect": "ask",     # judge infra failure → "ask" (human) or "deny" (fail-closed)
     "policy": None,            # inline capability ticket (the deterministic allow/deny floor)
     "behaviors": {},           # workspace semantic rules for the sift judge (NL or taxonomy) — no retrain
+    "rulesets": [],            # names of REUSABLE rule-packs in ~/.ddbt/rules/<name>/ to fold in (additive)
+    "llm": {"provider": None, "model": None, "max_requests": 4},  # AUTHORING LLM (ddbt create-rules) — never runtime
     "trajectory_rules": [],    # P5 declarative cross-step DSL (see ddbt.plugins.policy_rules)
     "plugins": [],             # optional pluggable defenses (see ddbt.plugins) — names or {name: opts}
     "auth": {},                # the agent's own scoped credentials (scaffolding; doc/credentials.md)
@@ -52,6 +55,15 @@ TEMPLATE = {
     "ddbt": True,
     "gate_offgoal": True,
     "error_effect": "ask",
+
+    # Reusable rule-packs (in ~/.ddbt/rules/, shared across projects) this project opts into. Author one
+    # for any tool with:  ddbt create-rules "notion-cli"  — it drafts good/bad rules, you verify, it folds
+    # in live (no retrain). Any project references the same pack by name.
+    "rulesets": [],
+
+    # The AUTHORING LLM for `ddbt create-rules` — NEVER used by the runtime guard (which is LLM-free).
+    # null provider = auto-detect from GEMINI_API_KEY / ANTHROPIC_API_KEY; max_requests caps a draft.
+    "llm": {"provider": None, "model": None, "max_requests": 4},
 
     # Workspace SEMANTIC rules for the sift judge — natural language OR taxonomy dicts. Unlike the
     # deterministic `policy` above, these are judged by similarity (no retrain: they're embedded and
@@ -106,65 +118,209 @@ TEMPLATE = {
         "quotas": {},                          # tool-name -> max high-impact calls, e.g. {"send_email": 3}
     },
 
-    "auth": {
-        "_status": "SCAFFOLDING — not consumed by ddbt yet. See doc/credentials.md.",
-        "github": {"app_id": "", "installation_id": "", "private_key_path": ".ddbt/github-app.pem", "repositories": []},
-        "gmail": {"client_id_env": "DDBT_GMAIL_CLIENT_ID", "client_secret_env": "DDBT_GMAIL_CLIENT_SECRET",
-                  "refresh_token_env": "DDBT_GMAIL_REFRESH_TOKEN", "scopes": ["https://www.googleapis.com/auth/gmail.send"]},
-        "jira": {"base_url": "", "bot_email": "", "api_token_env": "DDBT_JIRA_API_TOKEN", "project_key": ""},
-    },
+    # the agent's own scoped credentials, referenced by ENV-VAR NAME or file path (never inlined).
+    # Empty by default; scaffolding only — see doc/credentials.md for the shape when you need it.
+    "auth": {},
 }
 
 
-def write_default(project: str | Path, force: bool = False) -> tuple[Path, bool]:
-    """Write TEMPLATE to <project>/ddbt.json. Returns (path, written); written=False if it
-    already existed and force is off (never clobber a user's config silently)."""
-    path = Path(project) / FILENAME
-    if path.exists() and not force:
-        return path, False
-    path.write_text(json.dumps(TEMPLATE, indent=2, ensure_ascii=False) + "\n")
-    _load_raw.cache_clear()
-    return path, True
+# ---- where config lives: an OUT-OF-BAND per-project layer the guarded agent can't reach ----
+#
+# A project's policy is discovered from up to three files, merged low→high precedence:
+#   1. ~/.ddbt/ddbt.json                          global defaults for this machine
+#   2. ./ddbt.json (cwd or a parent)              IN-PROJECT — committable, team-shared (but an agent
+#                                                 working in the repo could edit it)
+#   3. ~/.ddbt/projects/<hash(project)>/ddbt.json OUT-OF-BAND — authoritative, tamper-proof (the agent
+#                                                 in the repo cannot see or edit it). `install` writes here.
+# The out-of-band layer WINS on conflicts. Deny lists are the exception: they are UNIONED across every
+# layer, so no layer can weaken the floor — in-project may only ADD denies, never remove them.
+
+# deny-list paths that are additive across layers (a floor, never weakened by a lower-precedence layer).
+_DENY_PATHS = (("policy", "tools", "deny"), ("policy", "files", "deny"),
+               ("policy", "web", "deny"), ("policy", "email", "deny"), ("behaviors", "deny"))
 
 
-def _find_file(cwd: str | Path | None) -> Path | None:
-    """ddbt.json in cwd or any parent, then ~/.ddbt/ddbt.json. First hit wins."""
+def _home() -> Path:
+    return Path(os.environ.get("DDBT_HOME") or (Path.home() / ".ddbt"))
+
+
+def project_root(cwd: str | Path | None = None) -> Path:
+    """The project's identity: the nearest ancestor holding a .git, else cwd itself. Stable per repo."""
+    start = Path(cwd).resolve() if cwd else Path.cwd().resolve()
+    for d in (start, *start.parents):
+        if (d / ".git").exists():
+            return d
+    return start
+
+
+def project_key(cwd: str | Path | None = None) -> str:
+    """A near-deterministic per-project key = blake2b of the resolved project-root path."""
+    return hashlib.blake2b(str(project_root(cwd)).encode(), digest_size=8).hexdigest()
+
+
+def project_dir(cwd: str | Path | None = None) -> Path:
+    """The out-of-band per-project directory under ~/.ddbt — config, per-project centroids, etc."""
+    return _home() / "projects" / project_key(cwd)
+
+
+def _in_project_file(cwd: str | Path | None) -> Path | None:
     start = Path(cwd).resolve() if cwd else Path.cwd().resolve()
     for d in (start, *start.parents):
         f = d / FILENAME
         if f.is_file():
             return f
-    glob = Path.home() / ".ddbt" / FILENAME
-    return glob if glob.is_file() else None
+    return None
 
 
-@lru_cache(maxsize=32)
-def _load_raw(resolved: str | None) -> tuple:
-    """Read and parse the file at `resolved` (a str path or None). Cached, hashable key.
-    Returns (data_items, source_path) — a malformed file falls back to defaults, never raises."""
-    if not resolved:
-        return tuple(DEFAULTS.items()), ""
+def _read(path: Path | None) -> dict:
+    if not path:
+        return {}
     try:
-        data = json.loads(Path(resolved).read_text())
-        if not isinstance(data, dict):
-            data = {}
+        d = json.loads(Path(path).read_text())
+        return d if isinstance(d, dict) else {}
     except (OSError, json.JSONDecodeError):
-        data = {}
-    merged = {**DEFAULTS, **data}
-    return tuple(merged.items()), resolved
+        return {}
+
+
+def _deep_merge(base: dict, over: dict) -> dict:
+    out = dict(base)
+    for k, v in over.items():
+        out[k] = _deep_merge(out[k], v) if isinstance(v, dict) and isinstance(out.get(k), dict) else v
+    return out
+
+
+def _dig(d: dict, path: tuple):
+    for p in path:
+        if not isinstance(d, dict):
+            return None
+        d = d.get(p)
+    return d
+
+
+def _bury(d: dict, path: tuple, val) -> None:
+    for p in path[:-1]:
+        d = d.setdefault(p, {})
+    d[path[-1]] = val
+
+
+def write_default(project: str | Path, force: bool = False, in_project: bool = False) -> tuple[Path, bool]:
+    """Write TEMPLATE to the per-project config. Default target is the OUT-OF-BAND dir
+    (~/.ddbt/projects/<hash>/ddbt.json) so a compromised agent can't edit its own policy; pass
+    in_project=True to write a committable ./ddbt.json instead. Never clobbers unless force."""
+    path = (Path(project) / FILENAME) if in_project else _oob_file(project)
+    if path.exists() and not force:
+        return path, False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(TEMPLATE, indent=2, ensure_ascii=False) + "\n")
+    _load_raw.cache_clear()
+    return path, True
+
+
+def _oob_file(cwd: str | Path | None) -> Path:
+    return project_dir(cwd) / FILENAME
+
+
+@lru_cache(maxsize=64)
+def _load_raw(cwd_key: str | None) -> str:
+    """Merged config JSON for a resolved cwd, cached. Layers low→high: defaults, global, in-project,
+    out-of-band (authoritative); deny lists unioned across all (an un-weakenable floor)."""
+    cwd = cwd_key or None
+    layers = [dict(DEFAULTS), _read(_home() / FILENAME), _read(_in_project_file(cwd)), _read(_oob_file(cwd))]
+    merged: dict = {}
+    for layer in layers:
+        merged = _deep_merge(merged, layer)
+    for path in _DENY_PATHS:                       # additive deny floor: union across every layer
+        seen, union = set(), []
+        for layer in layers:
+            for x in (_dig(layer, path) or []):
+                k = json.dumps(x, sort_keys=True) if isinstance(x, dict) else str(x)
+                if k not in seen:
+                    seen.add(k)
+                    union.append(x)
+        if union or _dig(merged, path) is not None:
+            _bury(merged, path, union)
+    _fold_rulesets(merged)                          # resolve "rulesets" refs → additive behaviors/exemplars
+    return json.dumps(merged)
+
+
+def _fold_rulesets(merged: dict) -> None:
+    """Fold each referenced reusable rule-pack (~/.ddbt/rules/<name>/) into the effective config —
+    its behaviors ADD to the project's deny/allow, its exemplars ADD to net_semantic. Shared authoring:
+    a pack is written once (ddbt create-rules) and any project opts in by name. Missing packs are skipped."""
+    names = merged.get("rulesets")
+    if not isinstance(names, list) or not names:
+        return
+    from ddbt.core import rules  # lazy — rules imports config._home
+    beh = merged.setdefault("behaviors", {}) if isinstance(merged.get("behaviors"), dict) else {}
+    merged["behaviors"] = beh
+    for pack in filter(None, (rules.load_pack(n) for n in names)):
+        pb = pack.get("behaviors", {}) if isinstance(pack.get("behaviors"), dict) else {}
+        for kind in ("deny", "allow"):
+            items = pb.get(kind)
+            if isinstance(items, list) and items:
+                existing = beh.get(kind) if isinstance(beh.get(kind), list) else []
+                beh[kind] = existing + [x for x in items if x not in existing]
 
 
 def load(cwd: str | Path | None = None) -> dict:
-    """The effective config dict for a project (file merged over defaults; env NOT applied here)."""
-    f = _find_file(cwd)
-    items, _ = _load_raw(str(f) if f else None)
-    return dict(items)
+    """The effective config for a project — the three layers merged (env NOT applied here)."""
+    key = str(Path(cwd).resolve()) if cwd else str(Path.cwd().resolve())
+    return json.loads(_load_raw(key))
+
+
+def sources(cwd: str | Path | None = None) -> list[str]:
+    """Every config file contributing to the effective policy, low→high precedence (existing only)."""
+    out = []
+    for f in (_home() / FILENAME, _in_project_file(cwd), _oob_file(cwd)):
+        if f and Path(f).is_file():
+            out.append(str(f))
+    return out
 
 
 def source(cwd: str | Path | None = None) -> str:
-    """Path of the ddbt.json actually in effect, or "" if none (pure defaults)."""
-    f = _find_file(cwd)
-    return str(f) if f else ""
+    """The highest-precedence config file in effect (out-of-band > in-project > global), or ""."""
+    s = sources(cwd)
+    return s[-1] if s else ""
+
+
+def _set_rulesets(refs: list, cwd: str | Path | None) -> Path:
+    path = _oob_file(cwd)
+    cfg = _read(path) or dict(TEMPLATE)
+    cfg["rulesets"] = refs
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(cfg, indent=2, ensure_ascii=False) + "\n")
+    _load_raw.cache_clear()
+    return path
+
+
+def add_ruleset(name: str, cwd: str | Path | None = None) -> Path:
+    """Reference a reusable rule-pack from this project's OUT-OF-BAND ddbt.json (create from template if
+    absent). Idempotent. Returns the config path. Used by `ddbt create-rules` / `ddbt enable-rules`."""
+    cur = _read(_oob_file(cwd)).get("rulesets")
+    refs = list(cur) if isinstance(cur, list) else []
+    return _set_rulesets(refs + [name] if name not in refs else refs, cwd)
+
+
+def remove_ruleset(name: str, cwd: str | Path | None = None) -> Path:
+    """Un-reference a rule-pack from this project (`ddbt disable-rules`). The pack itself is untouched."""
+    cur = _read(_oob_file(cwd)).get("rulesets")
+    refs = [r for r in cur if r != name] if isinstance(cur, list) else []
+    return _set_rulesets(refs, cwd)
+
+
+def llm(cwd: str | Path | None = None) -> dict:
+    """AUTHORING-LLM settings for `ddbt create-rules` (NEVER used by the runtime guard): which provider
+    and model draft rule content, and the per-command request cap. Env DDBT_LLM_PROVIDER /
+    DDBT_LLM_MODEL / DDBT_LLM_MAX_REQUESTS override ddbt.json; None provider = auto-detect from keys."""
+    d = load(cwd).get("llm")
+    d = d if isinstance(d, dict) else {}
+    prov = os.environ.get("DDBT_LLM_PROVIDER") or d.get("provider")
+    model = os.environ.get("DDBT_LLM_MODEL") or d.get("model")
+    try:
+        cap = int(os.environ.get("DDBT_LLM_MAX_REQUESTS") or d.get("max_requests", 4) or 4)
+    except (TypeError, ValueError):
+        cap = 4
+    return {"provider": str(prov).lower() if prov else None, "model": model or None, "max_requests": max(1, cap)}
 
 
 # ---- resolved settings, with env override ----

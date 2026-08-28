@@ -26,11 +26,14 @@ def _cmd_install(args: argparse.Namespace) -> int:
     from ddbt.core import config
 
     path = installer.install(args.project, intent=args.intent, intent_model=args.intent_model)
-    cfg_path, cfg_written = config.write_default(args.project)  # create defaults if absent, never clobber
+    # config is written OUT-OF-BAND (~/.ddbt/projects/<hash>/) by default so the guarded agent can't
+    # edit its own policy; pass --in-project for a committable ./ddbt.json instead.
+    cfg_path, cfg_written = config.write_default(args.project, in_project=args.in_project)
     written = bootstrap.trust(args.project)
     print(f"✓ ddbt hooks installed → {path}")
+    where = "in-project (committable)" if args.in_project else "out-of-band (agent-tamper-proof)"
     if cfg_written:
-        print(f"✓ default config written → {cfg_path}  (one file: judge · policy allow/deny · auth — see doc/credentials.md)")
+        print(f"✓ default config written → {cfg_path}  [{where}]  (judge · policy allow/deny · plugins)")
     else:
         print(f"• {cfg_path} kept (already present)")
     if written:
@@ -39,7 +42,7 @@ def _cmd_install(args: argparse.Namespace) -> int:
         print(f"✓ blind intent judge ENABLED (model: {args.intent_model})")
         print("  → ensure ANTHROPIC_API_KEY is set in the environment you launch Claude Code from.")
     print("  Next: `ddbt prepare` (one-time) to build the local sift judge model.")
-    print("        Editing ddbt.json `behaviors` needs NO training; it applies on the next run.")
+    print('        Teach ddbt a new tool:  ddbt create-rules "notion-cli"   (LLM-drafts good/bad, applies live — no retrain).')
     print("  Restart Claude Code in this project for hooks to take effect.")
     return 0
 
@@ -95,6 +98,101 @@ def _cmd_audit(args: argparse.Namespace) -> int:
 
 def _cmd_hook(args: argparse.Namespace) -> int:
     return hook_adapter.dispatch(args.event, sys.stdin.read())
+
+
+def _print_pack(name: str) -> None:
+    from ddbt.core import rules
+    beh = (rules.load_pack(name) or {}).get("behaviors", {})
+    print("  BAD — will raise risk / gate (deny):")
+    for r in (beh.get("deny") or [])[:40]:
+        print(f"    ✗ {r}")
+    print("  GOOD — known-safe (allow):")
+    for r in (beh.get("allow") or [])[:40]:
+        print(f"    ✓ {r}")
+
+
+def _confirm(question: str) -> bool:
+    if not sys.stdin.isatty():   # non-interactive → don't auto-integrate; caller prints how to enable
+        return False
+    try:
+        return input(f"{question} [y/N] ").strip().lower() in ("y", "yes")
+    except (EOFError, KeyboardInterrupt):
+        return False
+
+
+def _cmd_create_rules(args: argparse.Namespace) -> int:
+    """Draft a REUSABLE rule-pack for a tool (LLM-assisted, offline), let you VERIFY it, then integrate.
+    The pack lives in ~/.ddbt/rules/<name>/ so any project can reference it by name — no retrain."""
+    from ddbt.core import config, generate, rules
+
+    name = args.name
+    conf = config.llm(args.project)
+    provider = args.provider or conf["provider"]
+    model = args.model or conf["model"]
+    rounds = max(1, min(args.rounds, conf["max_requests"]))
+    who = provider or generate.available() or "none"
+    print(f"→ drafting a rule-pack for {name!r}  (provider={who}, model={model or 'default'}, rounds={rounds}) …")
+
+    if provider or generate.available():
+        try:
+            pack = rules.draft(name, args.about, provider=provider, model=model, rounds=rounds)
+        except Exception as exc:  # noqa: BLE001 — fall back to an editable starter, never fail hard
+            print(f"  LLM draft failed ({exc}); wrote an editable starter instead.")
+            pack = rules.starter(name, args.about)
+    else:
+        print("  no LLM key found (GEMINI_API_KEY / ANTHROPIC_API_KEY) — wrote an editable starter pack.")
+        pack = rules.starter(name, args.about)
+
+    path = rules.save_pack(name, pack)
+    deny, allow = rules.counts(name)
+    safe = rules._safe(name)
+    print(f"\n✓ drafted → {path}   ({deny} deny · {allow} allow)\n")
+    _print_pack(name)                                          # VERIFY: show the rules before integrating
+
+    # INTEGRATE — verify-then-integrate: enabled only on --enable or an interactive yes.
+    do_enable = args.enable or (not args.no_enable and _confirm(f"\nIntegrate '{safe}' into this project now?"))
+    if do_enable:
+        cfg = config.add_ruleset(name, args.project)
+        print(f"✓ enabled for this project → {cfg}  (applies live, no retrain)")
+    else:
+        print(f"• not enabled yet. Review/edit {path},")
+        print(f"  then integrate with:  ddbt enable-rules {safe}")
+    print(f"  Reusable anywhere: \"rulesets\": [\"{safe}\"] in any project's ddbt.json.")
+    return 0
+
+
+def _cmd_enable_rules(args: argparse.Namespace) -> int:
+    from ddbt.core import config, rules
+    if not rules.load_pack(args.name):
+        print(f"✗ no rule-pack named {args.name!r} (see `ddbt rules`)")
+        return 1
+    print(f"✓ enabled {args.name!r} for this project → {config.add_ruleset(args.name, args.project)}")
+    return 0
+
+
+def _cmd_disable_rules(args: argparse.Namespace) -> int:
+    from ddbt.core import config
+    print(f"✓ disabled {args.name!r} for this project → {config.remove_ruleset(args.name, args.project)}")
+    return 0
+
+
+def _cmd_rules(args: argparse.Namespace) -> int:
+    """List the reusable rule-packs available on this machine, and which this project references."""
+    from ddbt.core import config, rules
+
+    packs = rules.list_packs()
+    if not packs:
+        print('no rule-packs yet — create one with:  ddbt create-rules "<tool>"')
+        return 0
+    active = set(config.load(args.project).get("rulesets") or [])
+    print("reusable rule-packs (~/.ddbt/rules/):")
+    for n in packs:
+        deny, allow = rules.counts(n)
+        mark = "●" if n in active else "○"
+        print(f"  {mark} {n:22s} {deny:2d} deny · {allow:2d} allow")
+    print('\n  ● = referenced by this project    ○ = available but not enabled')
+    print('  enable:  ddbt enable-rules <name>      disable:  ddbt disable-rules <name>')
+    return 0
 
 
 def _cmd_prepare(args: argparse.Namespace) -> int:
@@ -238,6 +336,8 @@ def build_parser() -> argparse.ArgumentParser:
     install_p = _proj(sub.add_parser("install", help="install hooks + write a default ddbt.json"))
     install_p.add_argument("--intent", action="store_true", help="enable the blind intent judge (needs ANTHROPIC_API_KEY)")
     install_p.add_argument("--intent-model", default="claude-haiku-4-5", help="model for the intent judge")
+    install_p.add_argument("--in-project", action="store_true",
+                           help="write a committable ./ddbt.json instead of the out-of-band per-project config")
     install_p.set_defaults(fn=_cmd_install)
     _proj(sub.add_parser("uninstall", help="remove Claude Code hooks")).set_defaults(fn=_cmd_uninstall)
     _proj(sub.add_parser("trust", help="baseline config for Boundary 0")).set_defaults(fn=_cmd_trust)
@@ -251,6 +351,25 @@ def build_parser() -> argparse.ArgumentParser:
     a = sub.add_parser("audit", help="print a session's decision trail")
     a.add_argument("--session", required=True)
     a.set_defaults(fn=_cmd_audit)
+
+    cr = _proj(sub.add_parser("create-rules", help='draft a reusable rule-pack for a tool (LLM-assisted); verify, then enable'))
+    cr.add_argument("name", help='the tool/workflow to teach ddbt about, e.g. "notion-cli"')
+    cr.add_argument("--about", default="", help="a sentence describing the tool, for a better draft")
+    cr.add_argument("--provider", choices=["gemini", "anthropic"], help="LLM provider (default: ddbt.json llm.provider / auto)")
+    cr.add_argument("--model", help="model id (default: ddbt.json llm.model / the provider default)")
+    cr.add_argument("--rounds", type=int, default=1, help="how many generation requests to merge (capped by llm.max_requests)")
+    cr.add_argument("--enable", action="store_true", help="integrate immediately, skip the confirm prompt")
+    cr.add_argument("--no-enable", action="store_true", help="only draft (verify) — do not reference it in this project")
+    cr.set_defaults(fn=_cmd_create_rules)
+
+    er = _proj(sub.add_parser("enable-rules", help="reference a rule-pack in this project"))
+    er.add_argument("name")
+    er.set_defaults(fn=_cmd_enable_rules)
+    dr = _proj(sub.add_parser("disable-rules", help="un-reference a rule-pack from this project"))
+    dr.add_argument("name")
+    dr.set_defaults(fn=_cmd_disable_rules)
+
+    _proj(sub.add_parser("rules", help="list reusable rule-packs (~/.ddbt/rules/)")).set_defaults(fn=_cmd_rules)
 
     prep = sub.add_parser("prepare", help="train the non-LLM sift judge model (one-time)")
     prep.add_argument("--encoder", default="model2vec", choices=["model2vec", "minilm", "hashing"])
