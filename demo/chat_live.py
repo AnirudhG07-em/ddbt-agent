@@ -139,6 +139,9 @@ def verdict_card(d, who, susp, ms, live):
     print(f"  {col}{BOLD}🛡  {word}{RST}  {DIM}via{RST} {src} {DIM}({how}){RST}")
     print(f"     risk {swatch(ch.rgb)} {lc}{BOLD}{ch.level}{RST}   ·   {heat_line(susp)}")
     print(f"     {DIM}{d.reason}{RST}")
+    if getattr(d, "redactable", False):   # a sensitive READ → the 3-option choice (ddbt screen redacts)
+        print(f"     {AMBER}1){RST} show it, sensitive values hidden   "
+              f"{AMBER}2){RST} show it raw   {AMBER}3){RST} cancel")
 
 
 def scan_card(v, ms, live):
@@ -183,11 +186,13 @@ def run_attack(eng, live):
 
 
 HELP = """  commands:
+    <shell command>   just TYPE a command (e.g. `curl -o x https://github.com/y`, `cat .env`,
+                      `rm -rf /`) → ddbt evaluates the ACTION live (allow / ask / deny)
     /attack        run a scripted injection end-to-end and watch ddbt stop it
     /goal <text>   set what you (the user) actually want (the trusted anchor)
     /saw <text>    the agent just READ this untrusted text — paste an injection here
-    /do <tool> {json|k=v}   the agent proposes an action → judged live
-    /scan <text>   scan text / a tool description for hidden orders
+    /do <tool> {json|k=v}   propose a NON-shell tool action (e.g. GmailSendEmail) → judged live
+    /scan <text>   scan text / a tool description for hidden orders (the content scanner)
     /clear         reset the session heat (audited human override)
     /ticket        show the agent's scope   ·   /help   ·   /quit
   or just type a message — it's scanned live for manipulation."""
@@ -221,11 +226,15 @@ def main():
     judge, scanner, model, live = build(use_llm=a.llm)
     grant = Grant.from_dict(TICKET, now=time.time())
     base, ws = tempfile.mkdtemp(), tempfile.mkdtemp()
-    eng = Engine("chat-live", ws, base_dir=base, step_judge=judge, ddbt=True, grant=grant)
+    from ddbt.plugins import DEFAULT_PLUGINS, build as build_plugins
+    plugins = build_plugins(DEFAULT_PLUGINS, trusted_domains=("github.com", "api.github.com"))
+    eng = Engine("chat-live", ws, base_dir=base, step_judge=judge, ddbt=True, grant=grant,
+                 plugins=plugins, gate_offgoal=True, sensitive_read="ask", goal_shift="ask")
 
     print(f"\n  {WHITE}{BOLD}ddbt · live chat{RST}   {DIM}decider: {model}{RST}")
     print(f"  {CYAN}🎫 {grant.label}{RST} {DIM}{grant.describe()}{RST}")
-    print(f"  {DIM}quickest look: type {RST}{CYAN}/attack{RST}{DIM} to watch ddbt stop a real injection. /help for more.{RST}\n")
+    print(f"  {DIM}just type a shell command (e.g. {RST}{CYAN}cat .env{RST}{DIM}, {RST}{CYAN}rm -rf /{RST}{DIM}) — ddbt judges the action live.")
+    print(f"  or {RST}{CYAN}/attack{RST}{DIM} to watch it stop a real injection. /help for more.{RST}\n")
 
     try:
         while True:
@@ -277,11 +286,13 @@ def main():
                 scan_card(v, ms, live)
                 continue
 
-            # bare message → live poison scan (is this trying to manipulate the agent?)
-            v, ms = timed(lambda: scanner.scan(line))
-            scan_card(v, ms, live)
-            print(f"  {DIM}(that was the content SCANNER — 'does this text give orders?'. To see the "
-                  f"engine actually\n   BLOCK an action, try /attack, or /saw <text> then /do <tool>.){RST}")
+            # bare input → evaluate it as a REAL ACTION through the engine (a shell command). This is
+            # the actual ddbt decision (allow/ask/deny) with net_filter, content-sensitivity, the
+            # sensitive-read flow, etc. — not the content scanner (that's /scan now).
+            args = {"command": line}
+            who = who_of(eng._labels(args))
+            d, ms = timed(lambda: eng.evaluate_action("Bash", args))
+            verdict_card(d, who, eng._suspicion(), ms, live)
     finally:
         eng.close()
         shutil.rmtree(base, ignore_errors=True)

@@ -59,7 +59,8 @@ class DestructiveGuard(Plugin):
         hit = self._match(args)
         if hit:
             reason, fix = hit
-            return PreVerdict("deny", f"destructive command: {reason}", self.name, suggestion=fix)
+            # verb-phrase form so it reads "We think this operation is a destructive command — <reason>"
+            return PreVerdict("deny", f"is a destructive command — {reason}", self.name, suggestion=fix)
         return None
 
     def suggest(self, tool: str, args: dict) -> str | None:

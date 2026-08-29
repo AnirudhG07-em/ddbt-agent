@@ -67,21 +67,26 @@ class PiiDlp(Plugin):
             return None
 
     def _detect(self, text: str) -> list[str]:
+        hits: list[str] = []
+        # Presidio (validated, typed) if available…
         if self._analyzer is not None:
             try:
-                res = self._analyzer.analyze(text=text, language="en")
-                return [r.entity_type for r in res if r.score >= 0.5]
+                hits += [r.entity_type for r in self._analyzer.analyze(text=text, language="en") if r.score >= 0.5]
             except Exception:
                 pass
-        # fallback regex
-        hits = []
+        # …AND the regex fallback — Presidio pattern-only (no NER) misses some, e.g. a bare SSN. Union
+        # so a detector's blind spot is covered by the other.
         for name, pat in _FALLBACK.items():
             for m in pat.findall(text):
                 val = m if isinstance(m, str) else " ".join(m)
                 if name == "CREDIT_CARD" and not _luhn_ok(val):
                     continue
                 hits.append(name)
-        return hits
+        seen, out = set(), []
+        for h in hits:
+            if h not in seen:
+                seen.add(h); out.append(h)
+        return out
 
     def _try_anonymizer(self):
         try:
@@ -91,15 +96,16 @@ class PiiDlp(Plugin):
             return None
 
     def _redact_text(self, text: str) -> str:
-        """Replace detected PII with typed placeholders. Presidio Anonymizer if available, else regex."""
+        """Replace detected PII with typed placeholders — Presidio Anonymizer if available, THEN the
+        regex fallback on top (so a bare SSN Presidio's pattern-only mode misses is still redacted)."""
+        out = text
         if self._analyzer is not None and self._anonymizer is not None:
             try:
-                results = self._analyzer.analyze(text=text, language="en")
-                return self._anonymizer.anonymize(text=text, analyzer_results=results).text
+                results = self._analyzer.analyze(text=out, language="en")
+                out = self._anonymizer.anonymize(text=out, analyzer_results=results).text
             except Exception:
                 pass
-        out = text
-        for name, pat in _FALLBACK.items():
+        for name, pat in _FALLBACK.items():        # union: catch what Presidio missed
             out = pat.sub(f"<{name}_REDACTED>", out)
         return out
 
