@@ -228,8 +228,13 @@ def main():
     base, ws = tempfile.mkdtemp(), tempfile.mkdtemp()
     from ddbt.plugins import DEFAULT_PLUGINS, build as build_plugins
     plugins = build_plugins(DEFAULT_PLUGINS, trusted_domains=("github.com", "api.github.com"))
+    # interactive SHELL posture: follow the user wherever they go (goal_shift="allow" — off-script is
+    # fine, only injected/harmful actions block). The fuzzy session gate stays at its low-power default
+    # so it doesn't nag. The deterministic protections (exfil hosts, SSRF, destructive, known-attacks,
+    # sensitive reads, injection provenance, the data-access→send kill chain) fire on REAL threats —
+    # those are what actually block.
     eng = Engine("chat-live", ws, base_dir=base, step_judge=judge, ddbt=True, grant=grant,
-                 plugins=plugins, gate_offgoal=True, sensitive_read="ask", goal_shift="ask")
+                 plugins=plugins, gate_offgoal=True, sensitive_read="ask", goal_shift="allow")
 
     print(f"\n  {WHITE}{BOLD}ddbt · live chat{RST}   {DIM}decider: {model}{RST}")
     print(f"  {CYAN}🎫 {grant.label}{RST} {DIM}{grant.describe()}{RST}")

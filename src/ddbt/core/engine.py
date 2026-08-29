@@ -10,6 +10,7 @@ and every step is written to a lawful audit trail. No wordlists anywhere.
 from __future__ import annotations
 
 import enum
+import os
 import re
 import time
 from dataclasses import dataclass
@@ -35,9 +36,36 @@ _READ_CMD = re.compile(r"^\s*(cat|head|tail|less|more|bat|xxd|strings|grep|rg|nl
 # action is not a "trajectory" (that's the per-step judge's job), and scoring one prose action against
 # a session threshold just re-flags benign prose. This confines the gate to multi-step attacks.
 _TRAJ_MIN_STEPS = 2
-# session-trajectory gate default (impact risk over the whole session-so-far → ASK). 0.85 lifts
-# held-out R-Judge F1 to ~67 with no change to the single-action benchmarks; 0 disables it.
-TRAJ_GATE = 0.85
+# The session-trajectory "slow check" — a fuzzy whole-session score that ASKs when the accumulated
+# pattern looks like a slow attack (read → encode → drip out). It is genuinely HARD: the static head
+# barely discriminates at the session level (a benign shell run ≈0.96 vs a real read→encode→send ≈0.97),
+# so it can't be made precise — only quieter or louder. It is therefore a TUNABLE KNOB, not a fixed
+# global, set by the DDBT_SLOW_CHECK env var so an integration can dial it without code:
+#   off  → disabled (0). Rely purely on the deterministic killchain/provenance (precise, never nags).
+#   less → 0.98 (DEFAULT). On, but sits ABOVE the benign interactive ceiling (measured: an ordinary shell
+#          run tops out ≈0.974), so day-to-day work never trips it — only an extreme accumulated session
+#          does. A genuinely quiet, integration-safe backstop.
+#   more → 0.85 — aggressive; catches more slow attacks over longer ToolEmu/R-Judge trajectories (recall
+#          74%) but ASKs on ~half of benign multi-step sessions. For non-interactive audit/batch runs.
+# A bare number in the env var is honoured too (advanced). The DETERMINISTIC killchain runs regardless —
+# it, not this fuzzy head, is what actually stops read→encode→send exfil, and it never nags.
+_SLOW_LEVELS = {"off": 0.0, "less": 0.98, "more": 0.85}
+
+
+def _resolve_slow_check(raw: str | None) -> float:
+    """Map DDBT_SLOW_CHECK (off|less|more, or a bare 0..1 float) → a traj_gate threshold. Default: less."""
+    if raw is None or not raw.strip():
+        return _SLOW_LEVELS["less"]
+    key = raw.strip().lower()
+    if key in _SLOW_LEVELS:
+        return _SLOW_LEVELS[key]
+    try:
+        return min(1.0, max(0.0, float(key)))   # advanced: an explicit threshold
+    except ValueError:
+        return _SLOW_LEVELS["less"]              # unrecognised → the safe default, not a crash
+
+
+TRAJ_GATE = _resolve_slow_check(os.environ.get("DDBT_SLOW_CHECK"))
 
 
 class Effect(enum.Enum):
@@ -181,7 +209,7 @@ def _summarize(tool: str, tool_input: dict) -> str:
 class Engine:
     def __init__(self, session_id, workspace_root, base_dir=None, step_judge=None, ddbt=True,
                  error_effect="ask", grant=None, gate_offgoal=False, plugins=None, deny_mode="block",
-                 traj_gate=0.85, goal_shift="deny", sensitive_read="deny", **_legacy):
+                 traj_gate=TRAJ_GATE, goal_shift="deny", sensitive_read="deny", **_legacy):
         from ddbt.plugins.base import PluginManager
         self.session_id = session_id
         self.workspace_root = workspace_root
@@ -210,8 +238,9 @@ class Engine:
         # catches a slow attack whose individual steps each look fine, which the per-step judge can't see.
         # It's an ASK, not a DENY: a session-level pattern is a "worth a look", not a certainty (the per-
         # step judge still hard-DENYs concrete injection/exfil), so a benign-but-unusual multi-step session
-        # isn't silently blocked. Default 0.85 (module TRAJ_GATE); held-out R-Judge F1 64→67, other five
-        # benchmarks unchanged. 0 disables. Only fires if the judge exposes trajectory_risk.
+        # isn't silently blocked. Default comes from the DDBT_SLOW_CHECK env knob (module TRAJ_GATE) —
+        # "less" (0.98, quiet) unless set to "more"/"off"/a number. 0 disables. Only fires if the judge
+        # exposes trajectory_risk. A caller may still pass traj_gate=… explicitly (benchmarks use 0.85).
         try:
             self.traj_gate = float(_legacy.get("traj_gate", traj_gate))
         except (TypeError, ValueError):
@@ -408,13 +437,14 @@ class Engine:
                       else _summarize(tool_name, tool_input))
         self._traj_append(f"AGENT:\n  ACTION: {action_txt}")
         steps = self.store.increment_meta("traj_steps", 1)
-        # Fire ONLY on a genuine MULTI-STEP session. A single action is not a "trajectory" — that's the
-        # per-step judge's job, and scoring one prose action against a session threshold just re-flags
-        # benign prose (the head over-scores prose ~0.9). Requiring several accumulated steps confines
-        # this to what it's for: a slow attack spread across turns. (Below the floor: no change, so the
-        # single-action benchmarks are untouched; above it, R-Judge-style trajectories get the session view.)
-        if (self.traj_gate and steps >= _TRAJ_MIN_STEPS and tool_name not in _MESSAGE_TOOLS
-                and effect is Effect.ALLOW):
+        # SESSION-TRAJECTORY "slow check" — level set by DDBT_SLOW_CHECK (default "less" = 0.98, quiet).
+        # It's a fuzzy whole-session score that over-fires interactively (everything looks riskier as a
+        # shell session grows), so the default sits above the benign ceiling and everyday work never trips
+        # it. A concrete slow attack (read secret → encode → send) is caught by the DETERMINISTIC layers —
+        # provenance taint, the killchain plugin, exfil hosts — which don't nag. Set "more" (0.85) for
+        # aggressive audit/batch use. When on, it still never fires on a read or a message-to-user.
+        if (self.traj_gate and steps >= _TRAJ_MIN_STEPS and effect is Effect.ALLOW
+                and not _is_read(tool_name, tool_input) and tool_name not in _MESSAGE_TOOLS):
             traj_fn = getattr(self.step_judge, "trajectory_risk", None)
             traj_r = traj_fn(self._traj_text()) if traj_fn else None
             if traj_r is not None and traj_r >= self.traj_gate:

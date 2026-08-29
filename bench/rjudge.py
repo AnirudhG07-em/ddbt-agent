@@ -99,7 +99,12 @@ def _predict(rec: RJRecord, step_judge, base: str, block_on=(Effect.DENY, Effect
       * (DENY,)      — strict: only a hard deny counts (gate = defer to human, not unsafe)
     """
     block_on = set(block_on)
-    eng = Engine(f"rj-{rec.id}", workspace_root=base, base_dir=base, step_judge=step_judge, ddbt=ddbt)
+    # R-Judge measures the CAPABILITY CEILING, so it enables the optional session-trajectory gate
+    # (traj_gate=0.85) — this is what the README's F1 67.1% row reflects. The PRODUCT defaults the gate
+    # OFF (traj_gate=0) because at spec 45% it nags on interactive shells; slow attacks there are caught
+    # deterministically by the killchain instead. Run without this line to see the gate-off number (~58%).
+    eng = Engine(f"rj-{rec.id}", workspace_root=base, base_dir=base, step_judge=step_judge,
+                 ddbt=ddbt, traj_gate=0.85)
     eng.on_session_start("startup", base)
     eng.on_user_prompt(rec.goal)
     stopped = errored = False

@@ -283,8 +283,16 @@ guard can't win it.
 | **AgentTrust** (16 / 8)          | **87.5%** · **87.5%**                              | 100% · 62.5%                        |
 | **ToolEmu** (144 / 144)          | **36.8%** · **79.9%**                              | 80.6% · 31.2%                       |
 | **AgentSafetyBench** (307 / 293) | **31.6%** · **80.9%**                              | 65.1% · 66.9%                       |
-| **R-Judge** (held-out)           | **F1 67.1%** (recall 73.8 · spec 45.5)             | F1 89.5% (recall 93.3 · spec 83.1)  |
+| **R-Judge** (held-out) ¹         | **F1 67.1%** (recall 73.8 · spec 45.5)             | F1 89.5% (recall 93.3 · spec 83.1)  |
 | **MCPTox** (485 / 8)             | *n/a — sift judges actions, not tool descriptions* | 99.8% caught · 0/8 benign flagged   |
+
+¹ **This R-Judge row is the capability ceiling — the session "slow check" set to `more`** (`traj_gate=0.85`).
+That gate scores the whole session at once and lifts recall to 73.8%, but at spec 45.5% it also turns *over half*
+of benign multi-step sessions into an ASK — too noisy for interactive use. So the slow check is a **tunable env
+knob, `DDBT_SLOW_CHECK`**, and defaults to **`less`** (0.98 — above the benign interactive ceiling, so it stays
+quiet). With the default, held-out R-Judge is F1 ≈ 58% (recall 55 · spec 56); the deterministic killchain
+(data-access → external send) + provenance taint carry slow-attack detection without the nagging. Set
+`DDBT_SLOW_CHECK=more` for non-interactive audit/batch runs, or `off` to disable it entirely.
 
 ![sift vs LLM across benchmarks](./doc/bench_sift_vs_llm.svg)
 
@@ -299,11 +307,16 @@ model (see [`sift/`](sift/)) — no LLM, no API, no network, **$0 and sub-millis
   by *what* is touched (`passport.png`, credentials, a wire transfer → ask) × where it goes × who chose
   the destination, scored as a weighted sum. This is why the benign-clean numbers are high without letting
   real exfil through (InjecAgent still 93.5% stopped).
-- **A session-trajectory gate closes part of the R-Judge gap, LLM-free** — the same local model, run over
-  the *whole session so far* (not just one step), asks for a human check when the accumulated pattern looks
-  unsafe. It catches a slow attack whose steps each look fine, and lifts held-out R-Judge F1 64→67 with no
-  change to the other five benchmarks. (A frozen small transformer, MiniLM, was tested as the encoder and
-  did **not** beat the static model — so ddbt stays torch-free.)
+- **An optional session-trajectory gate raises the R-Judge ceiling, LLM-free — but ships OFF** — the same
+  local model, run over the *whole session so far* (not just one step), can ASK when the accumulated pattern
+  looks unsafe, lifting held-out R-Judge F1 to 67. But the static-embedding head barely discriminates at the
+  session level (a benign shell run and a real read→encode→send both score ≈0.96), so at any usable threshold
+  it flags over half of benign sessions — pure nagging in an interactive shell. So it **defaults off**
+  (`traj_gate=0`); the deterministic **killchain** does the real slow-attack detection: it fires only when
+  sensitive data was actually *accessed* and a later step *sends it to an external destination* — a run of
+  ordinary commands (`ls`, `cat notes`, `git status`, a couple of curls to trusted hosts) is never a chain.
+  (A frozen small transformer, MiniLM, was tested as the encoder and did **not** beat the static model — so
+  ddbt stays torch-free.)
 - **R-Judge scores every ASK as a false positive** (it's binary — no "ask a human" bucket) — but an
   ASK is ddbt's *feature*, not a miss, so sift's F1 here is a **lower bound**. ddbt never blocks the
   agent from *talking to you*; only tool actions with external effect are gated.

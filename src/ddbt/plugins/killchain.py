@@ -6,10 +6,14 @@ the SEQUENCE is the attack. Holmes' contribution over per-call signatures is to 
 the ATT&CK kill chain and fire on the correlated scenario, not the individual event.
 
 This plugin keeps a per-session, ordered list of the ATT&CK TACTICS reached (coarse detectors — the
-precise technique signatures are mitre_guard's job), and when a step reaches a TERMINAL tactic
-(exfiltration / impact / C2 / persistence) after the session has already progressed through other
-stages, it escalates: DENY once ≥2 prior stages have occurred (a real chain), ASK after 1. Deterministic
-and cheap — pure set/list bookkeeping over what already ran.
+precise technique signatures are mitre_guard's job). Its ONE firing rule, taken straight from the
+data-exfiltration methodology (mindpointgroup.com/blog/conducting-and-detecting-data-exfiltration):
+a chain is only real once sensitive data was actually ACCESSED (credential-access / collection) — mere
+recon or cleanup is NOT a chain. Given real data access, a step that then SENDS to an external
+destination is exfiltration → DENY; a fuller multi-stage progression into another terminal tactic
+(destroy / C2 / persistence) → DENY. Everything else stays silent. This is deliberately conservative:
+without a prior data-access stage AND a terminal action, the plugin never fires, so an ordinary run of
+varied commands (ls, cat notes, git status, a couple of curls to trusted hosts) is never a "kill chain".
 """
 
 from __future__ import annotations
@@ -38,7 +42,9 @@ _TACTIC = [
     ("impact", re.compile(r"rm\s+-[a-z]*[rf]|mkfs\.|dd\s+.*of=/dev/|\bshred\b|:\(\)\s*\{|encrypt|ransom|"
                           r"drop\s+database|truncate\s+table|vssadmin\s+delete", re.I)),
 ]
-_PRECURSOR = {"credential_access", "collection", "discovery", "defense_evasion"}
+# A chain needs proof that sensitive data was actually TOUCHED (accessed or staged), not just recon.
+_DATA_ACCESS = {"credential_access", "collection"}   # read a secret / staged data to send
+_WEAK = {"discovery", "defense_evasion"}             # recon or cleanup — supporting only, never enough alone
 _TERMINAL = {"exfiltration", "impact", "command_and_control", "persistence"}
 
 
@@ -86,15 +92,27 @@ class KillChain(Plugin):
     def pre_check(self, tool: str, args: dict, ctx: PluginContext) -> PreVerdict | None:
         text = flatten(args)
         cur = _stages(tool, text, self._external_egress(tool, text))
-        if not (cur & _TERMINAL):
+        term = cur & _TERMINAL
+        if not term:
             return None                     # not a terminal action → no chain to complete yet
-        prior = [s for s in self._load(ctx) if s not in cur]
-        distinct_prior = [s for s in prior if s in _PRECURSOR or s in _TERMINAL]
-        if not distinct_prior:
+        # `_load` holds only stages from EARLIER steps (observe runs after this pre_check), so it is
+        # exactly the prior history — don't subtract the current step, or a terminal that also happens
+        # to name a secret (e.g. `curl -d @.env …`) would erase the real earlier access that precedes it.
+        history = self._load(ctx)
+        data_prior = [s for s in history if s in _DATA_ACCESS]
+        weak_prior = [s for s in history if s in _WEAK]
+        # THE gate: no earlier step actually accessed sensitive data → this is not a chain. This is
+        # what stops a run of varied commands (recon, cleanup, a destructive step) from reading as an
+        # attack. Exfiltration in particular requires that data was accessed AND is now being sent out.
+        if not data_prior:
             return None
-        chain = " → ".join(distinct_prior + sorted(cur & _TERMINAL))
-        if len(distinct_prior) >= 2:
-            return PreVerdict("deny", f"Kill chain (multi-stage attack) · {chain} — a sequence whose "
-                              f"steps are innocuous alone but together are an attack", self.name)
-        return PreVerdict("ask", f"Kill chain forming · {chain} — this continues a multi-step pattern; "
-                          f"confirm it's intended", self.name)
+        chain = " → ".join(data_prior + weak_prior + sorted(term))
+        if "exfiltration" in term:
+            return PreVerdict("deny", f"completes a data-exfiltration sequence · {chain} — sensitive data "
+                              f"was accessed earlier and this step sends it to an external destination",
+                              self.name, tactic="exfiltration")
+        # A non-exfil terminal (destroy / C2 / persistence) is a chain only with a fuller progression.
+        if len(data_prior) + len(weak_prior) >= 2:
+            return PreVerdict("deny", f"is part of a multi-stage attack · {chain} — steps that are "
+                              f"innocuous alone but together complete an attack", self.name)
+        return None

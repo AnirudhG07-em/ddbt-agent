@@ -36,6 +36,10 @@ _STOP = {
     "unless", "explicitly", "specifically", "did", "didn", "t", "am", "is", "are", "be", "been",
     "asking", "asked", "named", "name", "want", "should", "would", "could", "them", "they", "he",
     "she", "we", "us", "our", "at", "by", "as", "so", "if", "then", "else", "also", "just",
+    # render-template keywords — NOT semantic content. Without these, `TOOL=Bash ARGS: git status`
+    # shared a spurious "args"/"tool" token with every rule, so a read like `git status`/`git log`
+    # falsely matched a "don't push/commit" rule (2 shared → fired). Excluding them fixes that.
+    "tool", "args", "source", "sink", "payload",
 }
 
 
