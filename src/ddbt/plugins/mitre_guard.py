@@ -71,7 +71,10 @@ def _text(args) -> str:
 
 class MitreGuard(Plugin):
     name = "mitre_guard"
-    headline = "This matches a known attack technique."
+    # each signature carries a plain "why" (e.g. "opens a reverse shell") — that IS the user message.
+    # headline="" so the engine shows just that one intuitive line; the tactic/technique IDs stay in the
+    # signature table for the audit log, not the user's face.
+    headline = ""
 
     def _match(self, args) -> tuple | None:
         blob = _text(args)
@@ -85,4 +88,6 @@ class MitreGuard(Plugin):
         if not hit:
             return None
         tactic, tech, verdict, why = hit
-        return PreVerdict(verdict, f"{tactic} ({tech}) · {why}", self.name)
+        # intuitive one-liner from the signature's plain `why`; "— proceed?" only when it's an ASK.
+        msg = f"this {why}" + (" — proceed?" if verdict == "ask" else "")
+        return PreVerdict(verdict, msg, self.name)

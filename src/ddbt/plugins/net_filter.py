@@ -111,7 +111,10 @@ def _ssrf_hit(host: str) -> str | None:
 
 class NetFilter(Plugin):
     name = "net_filter"
-    headline = "Data is heading to a risky or attacker-controlled destination."
+    # No shared headline: each gate below carries its OWN single, GENERIC one-liner in `reason` — it
+    # classifies the TYPE of concern (a network send / an unfamiliar destination / a drop service) and
+    # never echoes the literal host or filename. (headline="" so the engine shows just that one line.)
+    headline = ""
 
     def __init__(self, trusted_domains: tuple[str, ...] = (), exfil_services=(), allow_hosts=(),
                  multi_suffixes=(), provenance_gate: bool = True, block_ssrf: bool = True,
@@ -135,8 +138,7 @@ class NetFilter(Plugin):
         integrity = None
         if self.action_integrity and _HIGH_IMPACT.search(_split_ident(tool)) and self._injection_driven(text, ctx):
             integrity = PreVerdict("ask",
-                "Untrusted-driven action (TA0002) · this high-impact action's parameters came from "
-                "untrusted tool content, not from your request — confirm before it runs", self.name)
+                "a high-impact action driven by untrusted content, not your request — proceed?", self.name)
         if not (_EGRESS.search(tool) or _EGRESS.search(text) or destinations(text)):
             return integrity
         sinks = [(k, t) for k, t in provenance.extract(text) if k in _SINK_KINDS]
@@ -153,14 +155,14 @@ class NetFilter(Plugin):
                 s = _ssrf_hit(host)
                 if s:
                     worst = self._max(worst, PreVerdict("deny",
-                        f"SSRF/metadata (T1552 · TA0006) · egress to {s}", self.name))
+                        "reaching an internal or cloud-metadata address it shouldn't", self.name))
                     continue
             reg = _registrable(host, self.multi) if host else None
             # C. exfil-service denylist
             if self.block_exfil_services and host and (_suffix_match(host, self.exfil)):
                 worst = self._max(worst, PreVerdict("deny",
-                    f"Exfiltration (T1567 · TA0010) · {reg or host} is a known exfil/paste/tunnel/webhook "
-                    f"service — a near-certain exfil sink", self.name))
+                    "sending data to a known paste/tunnel/webhook drop service",
+                    self.name))
                 continue
             # A. destination provenance gate — the InjecAgent data-stealing lever
             v = self._provenance_verdict(ident, host, reg, goal, ctx, seen_regs)
@@ -195,18 +197,16 @@ class NetFilter(Plugin):
             # INJECTION-DERIVED: this destination was chosen by whoever wrote untrusted tool content,
             # not by the user. This is the exfil sink of the data-stealing attack class.
             return PreVerdict("deny",
-                f"Exfiltration (T1567 · TA0010) · the destination {ident[:48]!r} was chosen by untrusted "
-                f"tool content, not by you — the injected-recipient exfil pattern", self.name)
+                "sending data to a destination chosen by untrusted content, not by you", self.name)
         if not external:
             return None
         # UNKNOWN origin (never in the goal, never in a tool result) on an external destination.
         if self.gate_unknown:
             return PreVerdict("ask",
-                f"egress to {ident[:48]!r}, a destination that appears neither in your request nor in any "
-                f"tool result — confirm it's intended", self.name)
+                "reaching an external destination you didn't name — proceed?", self.name)
         if self.gate_newly_seen and reg and reg not in seen_regs:
             return PreVerdict("ask",
-                f"first send to {reg} this session — confirm this new external destination", self.name)
+                "reaching an external destination not used earlier this session — proceed?", self.name)
         return None
 
     def _session_destinations(self, ctx: PluginContext) -> set[str]:

@@ -339,9 +339,10 @@ class Engine:
         # a plugin ASK-floor escalates an otherwise-ALLOW step to a human check
         if plugin_floor is not None and effect is Effect.ALLOW:
             effect, checkpoint = Effect.ASK, f"plugin:{plugin_floor.plugin}"
+            # the plugin is the REASON for the ASK — show only its concern (e.g. the destination), NOT
+            # the judge's separate content verdict ("clean · risk=0.10"), which would read as contradictory.
             lead = (plugin_floor.headline + " ") if plugin_floor.headline else ""
-            verdict.reason = (f"{lead}{plugin_floor.reason} · {verdict.reason}"
-                              if verdict.reason else f"{lead}{plugin_floor.reason}")
+            verdict.reason = f"{lead}{plugin_floor.reason}"
         reason = verdict.reason
         # GOAL-SHIFT RE-ANCHOR: when we follow the user to a new direction (goal_shift="allow", e.g. a
         # shell), adopt it as the working goal so the FOLLOW-UP steps read as on-goal instead of each

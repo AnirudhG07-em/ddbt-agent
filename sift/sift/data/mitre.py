@@ -169,6 +169,9 @@ _FRIENDLY = {
     "injection": "an instruction that came from untrusted content",
     "unauthorized_change": "silently altering records",
     "denial_of_service": "taking a service down",
+    "mass_action": "a bulk operation over many records at once",
+    "harmful_content": "creating harmful content (malware or phishing)",
+    "deception": "hiding or covering its tracks",
 }
 
 
@@ -182,7 +185,6 @@ def lookup(category: str) -> Mitre:
 
 
 def describe(category: str, decision: str | None = None) -> str:
-    """'<Tactic> (<TA-ID>) · <severity>' — severity escalates to high on a DENY."""
-    m = lookup(category)
-    sev = "high" if (decision or "").upper() == "DENY" and m.severity != "high" else m.severity
-    return f"{m.label()} · {sev}"
+    """A plain, intuitive statement of the detected tactic for the user — no ATT&CK codes. (The exact
+    tactic/technique IDs still live in `lookup()`/MAP for the audit log and any machine consumer.)"""
+    return f"looks like {friendly_name(category)}"

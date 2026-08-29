@@ -173,7 +173,7 @@ class SiftJudge:
                 # was detected in plain words, no jargon dump (parallels the ASK_OVERRIDE one-liner style).
                 reason=(f"This looks like it involves {_friendly_name(mitre_cat)} — okay to proceed?"
                         if (high_impact and not harmful and exfil_sev >= 0.30)
-                        else (f"bulk data operation over all records (Impact TA0040) · high · risk={s.model_risk:.2f}"
+                        else ("this looks like a bulk operation over many records at once"
                               if bulk_harm and s.model_risk < bands.tau_deny else s.reason)),
             )
         except Exception as exc:  # fail CLOSED, flagged as error (not a real detection)
