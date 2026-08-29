@@ -18,6 +18,7 @@ needs distillation — running the existing LLM judge over a real action log to 
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 import joblib
@@ -42,6 +43,18 @@ def _load_training_records():
             used.append(name)
         except (FileNotFoundError, OSError):
             pass  # data not in this checkout → skip
+    # PROVENANCE HARD-NEGATIVES: for each injected instruction, also the IDENTICAL instruction that the
+    # USER asked for (label 0). Same surface text; the only discriminator is provenance + goal-relatedness.
+    # This is what teaches the model "high-impact BUT on-goal/authorised ≠ attack" — the exact confusion
+    # behind R-Judge / ToolEmu false positives — without training on those test sets. (benches.load_*_provtest)
+    for kind in ("ds", "dh"):
+        try:
+            recs = benches.load_injecagent_provtest(kind)
+            if recs:
+                records += recs
+                used.append(f"injecagent_prov_{kind}({len(recs)})")
+        except (FileNotFoundError, OSError):
+            pass
     # R-Judge TRAIN split — a broad, human-labelled safety set (many scenarios), so the model sees
     # diverse trajectories and its scores spread (fixing the calibration collapse). The held-out TEST
     # split is never trained on; measure it with the R-Judge check.
@@ -59,6 +72,27 @@ def _load_training_records():
     # sift.data.benches for experimentation. To try anyway (e.g. with a stronger encoder), re-enable:
     #     records += benches.load_toolemu_labeled(split="train")
     #     records += benches.load_agentsafetybench_labeled(split="train")
+
+    # DISTILLED data (recommendation #1): LLM-labelled prose-harm actions produced offline by
+    # sift/distill.py. This is how the LLM judge's prose-harm judgment enters the static model — the
+    # lever for the ToolEmu/Agent-SafetyBench ceiling. Held out by hash so the reported gain is real.
+    import glob
+    distilled = 0
+    for f in sorted(glob.glob(str(Path(__file__).resolve().parent / "data" / "distilled" / "*.jsonl"))):
+        for line in open(f):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                r = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if benches._bucket(str(r.get("args", ""))) < 20:  # 20% held out for honest test
+                continue
+            records.append(r)
+            distilled += 1
+    if distilled:
+        used.append(f"distilled({distilled})")
 
     # optional workspace domain packs (extensible; empty by default) — sift/data/domains/*.jsonl
     dom = domains.load(split="train")
@@ -84,7 +118,16 @@ def main(argv=None):
     fit, cal = to_dataset(fit_r), to_dataset(cal_r)
     print(f"[train] {len(records)} records from {used}  (fit={len(fit)} cal={len(cal)})")
 
-    model = Fusion(args.encoder).fit(fit)
+    model = Fusion(args.encoder)
+    # FAIL LOUDLY on a silent encoder fallback. get_encoder() degrades model2vec→hashing when the dep
+    # is missing; a model trained on hashing but *served* on model2vec is silently garbage (and a
+    # different feature dim). Refuse rather than ship it. (Hit in practice: the sift venv lacked
+    # model2vec, so train fell back to hashing — this guard is the tripwire.)
+    actual = getattr(model.enc, "name", args.encoder)
+    if args.encoder != "hashing" and actual != args.encoder:
+        raise SystemExit(f"[train] ABORT: requested encoder '{args.encoder}' but got '{actual}' "
+                         f"(dependency missing?). Install it — do NOT train on the fallback.")
+    model.fit(fit)
     protos = Prototypes(args.encoder).fit(fit)   # for human-readable reasons at inference
 
     raw = model.predict_proba(cal)

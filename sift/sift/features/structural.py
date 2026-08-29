@@ -20,9 +20,14 @@ from dataclasses import dataclass, asdict
 import numpy as np
 
 # tools/verbs that move data OUT of the agent's context = potential exfil sinks
+# EGRESS = actually transmitting data OUT. Kept to send/transmit VERBS — not the bare noun "email"
+# ("identify Alice's email", "search the invitation email" are reads, not egress) and not "fetch"
+# (that's ingress). Real exfil still trips this via a send-verb OR an actual external destination
+# (the `or dests` in extract()), so tightening the keywords cuts benign false-positives without
+# losing attacks. "email"/"mail" only count as a verb when they carry a recipient ("email … to/@").
 _EGRESS = re.compile(
-    r"\b(send|email|mail|post|put|upload|push|publish|share|export|curl|wget|fetch|"
-    r"webhook|sync|transfer|pay|wire|sftp|scp)\b", re.I)
+    r"\b(send|post|put|upload|push|publish|share|export|curl|wget|webhook|sync|transfer|pay|wire|"
+    r"sftp|scp|forward|exfiltrat\w*)\b|\b(e-?mail|mail)\b[^.]{0,60}\b(to|@)\b", re.I)
 # high blast-radius / irreversible verbs
 _DESTRUCTIVE = re.compile(
     r"\b(delete|drop|truncate|rm|remove|destroy|wipe|revoke|force|--force|reset\s+--hard|"

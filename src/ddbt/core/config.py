@@ -38,6 +38,7 @@ DEFAULTS = {
     "gate_offgoal": True,      # benign off-goal step → ask a human, not a hard deny
     "error_effect": "ask",     # judge infra failure → "ask" (human) or "deny" (fail-closed)
     "deny_mode": "block",      # "block" = hard DENY; "override" = DENY→ASK_OVERRIDE (a human may force it)
+    "goal_shift": "ask",       # off-goal but CLEAN (a goal shift, not an injection): "ask" | "allow" (shell) | "deny"
     "policy": None,            # inline capability ticket (the deterministic allow/deny floor)
     "behaviors": {},           # workspace semantic rules for the sift judge (NL or taxonomy) — no retrain
     "rulesets": [],            # names of REUSABLE rule-packs in ~/.ddbt/rules/<name>/ to fold in (additive)
@@ -61,6 +62,11 @@ TEMPLATE = {
     # "block" = a DENY is a hard, un-forceable block (default). "override" = a DENY becomes ASK_OVERRIDE:
     # you CAN force it through, but with a loud warning naming the layer that flagged it and why.
     "deny_mode": "block",
+    # what to do when you go off the stated goal but the action is YOURS (clean provenance) — a goal
+    # shift, not an injection. "ask" (default) confirms the new direction; "allow" follows you (best for
+    # a shell, where intent changes constantly); "deny" is strict single-task mode. Injections/harmful
+    # off-goal actions are denied regardless of this setting.
+    "goal_shift": "ask",
 
     # Reusable rule-packs (in ~/.ddbt/rules/, shared across projects) this project opts into. Author one
     # for any tool with:  ddbt create-rules "notion-cli"  — it drafts good/bad rules, you verify, it folds
@@ -357,6 +363,9 @@ def engine_kwargs(cwd: str | Path | None = None) -> dict:
         "gate_offgoal": bool(c.get("gate_offgoal", True)),
         "error_effect": str(c.get("error_effect", "ask")),
         "deny_mode": (os.environ.get("DDBT_DENY_MODE") or str(c.get("deny_mode", "block"))).lower(),
+        # real deployments are benign-friendly: an off-goal-but-clean action (a goal shift, not an
+        # injection) ASKs rather than hard-denies — everyday work isn't suspected. Shell mode → "allow".
+        "goal_shift": (os.environ.get("DDBT_GOAL_SHIFT") or str(c.get("goal_shift", "ask"))).lower(),
     }
 
 

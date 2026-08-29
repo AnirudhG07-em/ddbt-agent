@@ -10,6 +10,7 @@ and every step is written to a lawful audit trail. No wordlists anywhere.
 from __future__ import annotations
 
 import enum
+import os
 import re
 import time
 from dataclasses import dataclass
@@ -27,6 +28,10 @@ _NOOP_TOOLS = {"TodoWrite"}
 # they are never a silent hard-block. Surfacing/quoting injected content back to the user is
 # transparency, not a dangerous deviation — and a message can't exfiltrate (the user is trusted).
 _MESSAGE_TOOLS = {"respond_to_user"}
+# The session-trajectory gate only fires once a session has at least this many agent steps — a single
+# action is not a "trajectory" (that's the per-step judge's job), and scoring one prose action against
+# a session threshold just re-flags benign prose. This confines the gate to multi-step attacks.
+_TRAJ_MIN_STEPS = int(os.environ.get("DDBT_TRAJ_MIN_STEPS", "2"))
 
 
 class Effect(enum.Enum):
@@ -155,7 +160,8 @@ def _summarize(tool: str, tool_input: dict) -> str:
 
 class Engine:
     def __init__(self, session_id, workspace_root, base_dir=None, step_judge=None, ddbt=True,
-                 error_effect="ask", grant=None, gate_offgoal=False, plugins=None, deny_mode="block", **_legacy):
+                 error_effect="ask", grant=None, gate_offgoal=False, plugins=None, deny_mode="block",
+                 traj_gate=0.95, goal_shift="deny", **_legacy):
         from ddbt.plugins.base import PluginManager
         self.session_id = session_id
         self.workspace_root = workspace_root
@@ -179,6 +185,25 @@ class Engine:
         # Injection-linked deviation still hard-denies. On in the hook; off in benchmarks (preserves measured behaviour).
         self.gate_offgoal = gate_offgoal
         self.goal = self.store.get_meta("goal", "") or ""
+        # SESSION-TRAJECTORY gate: score the whole session-so-far (not just this step) with the judge's
+        # trajectory head, and ASK (human confirm) when the accumulated pattern crosses this risk — this
+        # catches a slow attack whose individual steps each look fine, which the per-step judge can't see.
+        # It's an ASK, not a DENY: a session-level pattern is a "worth a look", not a certainty (the per-
+        # step judge still hard-DENYs concrete injection/exfil), so a benign-but-unusual multi-step session
+        # isn't silently blocked. Threshold picked on the R-Judge TRAIN split; held-out test F1 0.64→0.69
+        # with the other five benchmarks unchanged. 0 disables. Only fires if the judge exposes trajectory_risk.
+        try:
+            self.traj_gate = float(os.environ.get("DDBT_TRAJ_GATE", _legacy.get("traj_gate", traj_gate)))
+        except (TypeError, ValueError):
+            self.traj_gate = 0.95
+        # GOAL SHIFT: what to do when an action is off-goal but CLEAN-provenance (the user chose it, not
+        # injected content) — i.e. the user has moved on to a new task, not an attack. This is the norm
+        # in a shell, rare for a single-task agent. The lever the user holds:
+        #   "allow" → follow them (re-anchor the goal to the new direction; only injections stay blocked)
+        #   "ask"   → confirm the new direction once (default: a light human check, keeps leverage)
+        #   "deny"  → strict single-task mode (the old behaviour)
+        gs = str(os.environ.get("DDBT_GOAL_SHIFT", _legacy.get("goal_shift", goal_shift))).lower()
+        self.goal_shift = gs if gs in ("allow", "ask", "deny") else "ask"
 
     # ---- lifecycle ----
 
@@ -193,11 +218,30 @@ class Engine:
         self.audit.event("bootstrap", status=result.status, detail=result.summary())
         return result
 
+    _TRAJ_CAP = 10_000  # keep the most-recent ~10k chars of the session transcript (bounds encode cost)
+
+    def _traj_append(self, piece: str) -> None:
+        """Accumulate the session transcript (turn by turn) in the durable store, capped to the recent
+        tail so a long session still scores in bounded time. The goal is prepended at score time."""
+        piece = (piece or "").strip()
+        if not piece:
+            return
+        cur = self.store.get_meta("traj_turns", "") or ""
+        cur = (cur + "\n" + piece) if cur else piece
+        if len(cur) > self._TRAJ_CAP:
+            cur = cur[-self._TRAJ_CAP:]
+        self.store.set_meta("traj_turns", cur)
+
+    def _traj_text(self) -> str:
+        return f"GOAL: {self.goal}\n" + (self.store.get_meta("traj_turns", "") or "")
+
     def on_user_prompt(self, prompt: str) -> str:
         # the trusted goal anchors every relevance judgment; "continue" keeps the standing goal
         if _is_substantive_goal(prompt):
             self.goal = prompt.strip()
             self.store.set_meta("goal", self.goal)
+            self.store.set_meta("traj_turns", "")   # a genuinely new task starts a fresh transcript
+            self.store.set_meta("traj_steps", "0")  # …and a fresh step count for the trajectory gate
         denials = [e for e in self.audit.trail() if e.get("kind") == "decision" and e.get("state") == "deny"]
         if denials:
             return f"[ddbt] note: a prior step was blocked ({denials[-1].get('reason')}). Stay on the stated task."
@@ -298,10 +342,46 @@ class Engine:
             lead = (plugin_floor.headline + " ") if plugin_floor.headline else ""
             verdict.reason = (f"{lead}{plugin_floor.reason} · {verdict.reason}"
                               if verdict.reason else f"{lead}{plugin_floor.reason}")
-        # deny_mode="override" → a judge/combine DENY becomes an overridable, loudly-warned ASK_OVERRIDE
         reason = verdict.reason
+        # GOAL-SHIFT RE-ANCHOR: when we follow the user to a new direction (goal_shift="allow", e.g. a
+        # shell), adopt it as the working goal so the FOLLOW-UP steps read as on-goal instead of each
+        # re-triggering a shift. Safe: this path is reached only for CLEAN provenance (injected content
+        # was denied above), so an injection can never re-anchor the goal.
+        if checkpoint == "goal-shift" and effect is Effect.ALLOW:
+            new_goal = _summarize(tool_name, tool_input)[:200]
+            if new_goal:
+                self.goal = new_goal
+                self.store.set_meta("goal", self.goal)
+            reason = verdict.reason or "new direction (you initiated it, not injected) — following your lead"
+        elif checkpoint == "goal-shift":  # ASK on the shift — name it so the human sees a new direction
+            reason = "this looks like a new task (you initiated it, not injected) — confirm to proceed"
+        # deny_mode="override" → a judge/combine DENY becomes an overridable, loudly-warned ASK_OVERRIDE
         if effect is Effect.DENY:
             effect, reason = self._as_deny(verdict.reason, checkpoint)
+
+        # SESSION-TRAJECTORY gate: append this step to the running transcript and score the WHOLE
+        # session so far. The per-step judge sees one action; this sees the pattern the steps form
+        # together — a slow attack (read → encode → drip out) whose every step looks fine. It only
+        # tightens (ALLOW/ASK → DENY), never on a message-to-user (speaking is never the exfil), and
+        # only when the judge exposes a trajectory head. Held-out R-Judge: F1 0.64→0.75, spec 0.49→0.84.
+        action_txt = (tool_input.get("action") if isinstance(tool_input, dict) and tool_input.get("action")
+                      else _summarize(tool_name, tool_input))
+        self._traj_append(f"AGENT:\n  ACTION: {action_txt}")
+        steps = self.store.increment_meta("traj_steps", 1)
+        # Fire ONLY on a genuine MULTI-STEP session. A single action is not a "trajectory" — that's the
+        # per-step judge's job, and scoring one prose action against a session threshold just re-flags
+        # benign prose (the head over-scores prose ~0.9). Requiring several accumulated steps confines
+        # this to what it's for: a slow attack spread across turns. (Below the floor: no change, so the
+        # single-action benchmarks are untouched; above it, R-Judge-style trajectories get the session view.)
+        if (self.traj_gate and steps >= _TRAJ_MIN_STEPS and tool_name not in _MESSAGE_TOOLS
+                and effect is Effect.ALLOW):
+            traj_fn = getattr(self.step_judge, "trajectory_risk", None)
+            traj_r = traj_fn(self._traj_text()) if traj_fn else None
+            if traj_r is not None and traj_r >= self.traj_gate:
+                effect, checkpoint = Effect.ASK, "session-trajectory"
+                reason = (f"the steps so far combine into a pattern worth a human look "
+                          f"(session-trajectory risk {traj_r:.2f})")
+
         if not verdict.error:
             # this step's evidence tightens FUTURE steps; a downgraded block still counts as "blocked"
             self._bump_suspicion(verdict, blocked=effect in (Effect.DENY, Effect.ASK_OVERRIDE))
@@ -360,14 +440,22 @@ class Engine:
                 return Effect.ASK, "message-review"
             return Effect.ALLOW, "message"
         if verdict.deviation:
-            # Off-goal + injection-linked (stranger/unknown provenance, suspected injection, or
-            # exfil) is a hard DENY. A benign off-goal step on the agent's own initiative gates
-            # for a human when gate_offgoal is on. Keying on provenance keeps real injections denied.
+            # Off-goal + injection-linked (stranger/unknown provenance, suspected injection, or exfil)
+            # is a hard DENY — a real attack. But off-goal with CLEAN provenance is the USER doing
+            # something new: a GOAL SHIFT, not an attack. Denying that suspects everyday work (esp. in
+            # a shell). So injection deviations hard-DENY; clean deviations follow the goal_shift lever.
             injection_linked = (verdict.injection_suspected or verdict.external_exfil
                                 or who in ("stranger", "unknown"))
-            if self.gate_offgoal and not injection_linked:
-                return Effect.ASK, "off-goal-gate"
-            return Effect.DENY, "goal-fidelity"  # axis 1
+            # A goal shift that is ALSO harmful (exfil/destroy/high-impact off-goal) is not "just a new
+            # task" — the harm axis still denies it regardless of provenance. Only a CLEAN, non-harmful
+            # off-goal action is a benign goal shift the user may follow.
+            if injection_linked or (self.ddbt and verdict.harmful):
+                return Effect.DENY, "goal-fidelity"  # axis 1 — real injection / harmful deviation
+            if self.goal_shift == "allow":
+                return Effect.ALLOW, "goal-shift"    # follow the user (re-anchor happens in evaluate_action)
+            if self.goal_shift == "ask" or self.gate_offgoal:
+                return Effect.ASK, "goal-shift"      # confirm the new direction (a light human check)
+            return Effect.DENY, "goal-fidelity"      # strict single-task mode
         if self.ddbt and verdict.harmful:
             return Effect.DENY, "ethics"  # axis 2 — only when ddbt enabled
         soft = verdict.requests_secrecy or verdict.side_task or verdict.injection_suspected
@@ -516,6 +604,12 @@ class Engine:
             from ddbt.core.ledger import Ledger
             Ledger(self.store).record(tool_name, tool_input, payload)
         except Exception:  # noqa: BLE001 — telemetry must never break a tool call
+            pass
+        # feed the result into the session-trajectory transcript (the ENVIRONMENT turn) so the
+        # trajectory gate on the NEXT step sees what came back — where an injection actually arrives.
+        try:
+            self._traj_append(f"ENVIRONMENT: {str(payload)[:2000]}")
+        except Exception:  # noqa: BLE001 — never break a tool call over transcript bookkeeping
             pass
         try:
             rows = provenance.index_response(payload)

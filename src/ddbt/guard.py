@@ -45,9 +45,14 @@ class Guard:
     """A ready-to-use ddbt guard for one agent session. Build once, then check()/record() each step."""
 
     def __init__(self, session_id: str = "default", cwd: str = ".", *, judge=None, plugins=None,
-                 grant: object = "auto", base_dir: str | None = None, **engine_kwargs):
+                 grant: object = "auto", base_dir: str | None = None, shell: bool = False, **engine_kwargs):
         from ddbt.core import config
         cwd = str(cwd)
+        # SHELL MODE: in a shell the user's intent changes constantly, so an off-goal-but-clean action is
+        # a goal shift, not an attack — follow it (re-anchor the goal) instead of asking every time. Only
+        # injections / harmful actions are still blocked. `goal()` still lets you set intent explicitly.
+        if shell:
+            engine_kwargs.setdefault("goal_shift", "allow")
         if judge is None:
             from ddbt.judge.provider import make_step_judge
             judge = make_step_judge(cwd=cwd)

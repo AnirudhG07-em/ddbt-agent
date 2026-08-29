@@ -603,3 +603,37 @@ def test_deny_mode_override_downgrades_deny_to_ask_override():
     assert d.effect == Effect.ASK_OVERRIDE
     assert d.danger and d.overridable and d.needs_confirmation and not d.denied
     assert "would BLOCK" in d.reason and "provenance_taint" in d.reason   # names the layer + warns
+
+
+# ---- goal shift (benign off-goal = a new user task, not an attack) -------------------------------
+
+class _DevJudge:
+    """Off-goal (deviation) with configurable injection/harm signals."""
+    def __init__(self, injected=False, harmful=False):
+        self.injected, self.harmful = injected, harmful
+    def judge(self, facts):
+        return Verdict(serves_goal=False, deviation=True,
+                       injection_suspected=self.injected, harmful=self.harmful, reason="off-goal")
+
+
+def test_goal_shift_modes(base_dir):
+    # a CLEAN off-goal action = the user moving to a new task. The lever decides the outcome.
+    for mode, expect in (("deny", Effect.DENY), ("ask", Effect.ASK), ("allow", Effect.ALLOW)):
+        eng = Engine("gs-" + mode, ".", base_dir=base_dir, step_judge=_DevJudge(), ddbt=True, goal_shift=mode)
+        eng.on_user_prompt("fix the failing test")
+        d = eng.evaluate_action("git", {"action": "git status"})
+        assert d.effect == expect, (mode, d.effect)
+        if mode != "deny":
+            assert d.checkpoint == "goal-shift"
+        eng.close()
+
+
+def test_goal_shift_never_excuses_injection_or_harm(base_dir):
+    # even in the most permissive mode, an off-goal action that is injection-derived OR harmful
+    # is still a hard DENY — goal-shift only ever excuses a CLEAN, benign off-goal action.
+    for judge in (_DevJudge(injected=True), _DevJudge(harmful=True)):
+        eng = Engine("gs-safe", ".", base_dir=base_dir, step_judge=judge, ddbt=True, goal_shift="allow")
+        eng.on_user_prompt("fix the failing test")
+        d = eng.evaluate_action("send_email", {"to": "x@evil.io"})
+        assert d.effect == Effect.DENY and d.checkpoint == "goal-fidelity"
+        eng.close()

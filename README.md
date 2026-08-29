@@ -283,7 +283,7 @@ guard can't win it.
 | **AgentTrust** (16 / 8)          | **87.5%** · **87.5%**                              | 100% · 62.5%                        |
 | **ToolEmu** (144 / 144)          | **50.7%** · **62.5%**                              | 80.6% · 31.2%                       |
 | **AgentSafetyBench** (307 / 293) | **37.5%** · **74.7%**                              | 65.1% · 66.9%                       |
-| **R-Judge** (298 / 266)          | **F1 63.7%** (recall 67.8 · spec 49.6)             | F1 89.5% (recall 93.3 · spec 83.1)  |
+| **R-Judge** (held-out)           | **F1 69.0%** (recall 76.9 · spec 45.5)             | F1 89.5% (recall 93.3 · spec 83.1)  |
 | **MCPTox** (485 / 8)             | *n/a — sift judges actions, not tool descriptions* | 99.8% caught · 0/8 benign flagged   |
 
 ![sift vs LLM across benchmarks](./doc/bench_sift_vs_llm.svg)
@@ -297,6 +297,11 @@ model (see [`sift/`](sift/)) — no LLM, no API, no network, **$0 and sub-millis
   actually beats the LLM** (the LLM over-blocks benign work).
 - **On the prose-heavy sets (R-Judge, AgentSafetyBench) the LLM wins** — it reads dense trajectories
   better. sift trades recall for speed and cost; the gap is real, not hidden.
+- **A session-trajectory gate closes part of the R-Judge gap, LLM-free** — the same local model, run over
+  the *whole session so far* (not just one step), asks for a human check when the accumulated pattern looks
+  unsafe. It's what catches a slow attack whose steps each look fine, and it lifts held-out R-Judge F1
+  64→69 with no change to the other five benchmarks. (A frozen small transformer, MiniLM, was tested as the
+  encoder and did **not** beat the static model — so ddbt stays torch-free.)
 - **R-Judge scores every ASK as a false positive** (it's binary — no "ask a human" bucket) — but an
   ASK is ddbt's *feature*, not a miss, so sift's F1 here is a **lower bound**. ddbt never blocks the
   agent from *talking to you*; only tool actions with external effect are gated.

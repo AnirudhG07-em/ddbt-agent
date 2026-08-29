@@ -68,6 +68,17 @@ class SiftJudge:
         except Exception:
             return None
 
+    def trajectory_risk(self, transcript: str) -> float | None:
+        """P(unsafe) for the whole session transcript so far — the session-level view that recovers
+        signal the per-step judge loses. None if the scorer can't do it (e.g. an LLM/stub judge)."""
+        fn = getattr(self.scorer, "score_text", None)
+        if fn is None:
+            return None
+        try:
+            return float(fn(transcript))
+        except Exception:
+            return None
+
     def judge(self, facts: StepFacts) -> Verdict:
         try:
             # injection is decided by THIS action's provenance labels (did a value come from

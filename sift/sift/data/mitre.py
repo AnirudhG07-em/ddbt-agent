@@ -44,6 +44,12 @@ MAP: dict[str, Mitre] = {
     # axis-1 (anti-injection) — AI-specific, from MITRE ATLAS
     "injection":                Mitre("Prompt Injection", "AML.T0051", "LLM Prompt Injection", "AML.T0051", "high", "Integrity"),
     "unauthorized_change":      Mitre("Impact", "TA0040", "Data Manipulation", "T1565", "medium", "Integrity"),
+    # broadened tactic coverage
+    "discovery":                Mitre("Discovery", "TA0007", "System/Network/Account Discovery", "T1087", "medium", "Confidentiality"),
+    "lateral_movement":         Mitre("Lateral Movement", "TA0008", "Remote Services / Use Alternate Auth", "T1021", "high", "Integrity"),
+    "reconnaissance":           Mitre("Reconnaissance", "TA0043", "Gather Victim Identity Information", "T1589", "medium", "Confidentiality"),
+    "impersonation":            Mitre("Defense Evasion", "TA0005", "Impersonation / Spoofing", "T1656", "high", "Integrity"),
+    "denial_of_service":        Mitre("Impact", "TA0040", "Endpoint / Network Denial of Service", "T1499", "high", "Availability"),
 }
 
 _UNKNOWN = Mitre("Suspicious Action", "-", "-", "-", "medium", "-")
