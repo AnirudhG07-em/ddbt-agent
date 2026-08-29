@@ -30,26 +30,15 @@ def _cmd_install(args: argparse.Namespace) -> int:
     # edit its own policy; pass --in-project for a committable ./ddbt.json instead.
     cfg_path, cfg_written = config.write_default(args.project, in_project=args.in_project)
     written = bootstrap.trust(args.project)
-    print(f"✓ ddbt hooks installed → {path}")
-    where = "in-project (committable)" if args.in_project else "out-of-band (agent-tamper-proof)"
+    print(f"✓ hooks installed → {path}")
     if cfg_written:
-        print(f"✓ default config written → {cfg_path}  [{where}]  (judge · policy allow/deny · plugins)")
-    else:
-        print(f"• {cfg_path} kept (already present)")
-    if written:
-        print(f"✓ Boundary 0 baseline recorded for: {', '.join(written)}")
+        print(f"✓ config written → {cfg_path}")
     if args.intent:
-        print(f"✓ blind intent judge ENABLED (model: {args.intent_model})")
-        print("  → ensure ANTHROPIC_API_KEY is set in the environment you launch Claude Code from.")
-    # build the general (non-LLM) judge layer now if it isn't present — no separate `prepare` step.
-    if not args.no_prepare:
-        if _sift_model_path() is not None:
-            print("✓ local judge model already present (shared across projects)")
-        else:
-            print("→ no local judge model yet — building it (one-time, torch-free) …")
-            _build_model("model2vec")   # best-effort; ddbt still runs (LLM/hashing fallback) if it fails
-    print('  Teach ddbt a new tool:  ddbt create-rules "notion-cli"   (LLM-drafts good/bad, applies live — no retrain).')
-    print("  Restart Claude Code in this project for hooks to take effect.")
+        print(f"✓ intent judge enabled (model: {args.intent_model}) — needs ANTHROPIC_API_KEY")
+    # build the local judge model now if it isn't present — no separate `prepare` step.
+    if not args.no_prepare and _sift_model_path() is None:
+        _build_model("model2vec")   # best-effort; ddbt still runs (LLM/hashing fallback) if it fails
+    print("✓ ddbt ready — restart Claude Code for the hooks to take effect.")
     return 0
 
 
@@ -264,24 +253,23 @@ def _build_model(encoder: str = "model2vec", calibrate: bool = False) -> int:
     if train is None:
         print("✗ could not find sift/train_sift.py (is the sift/ project present?)")
         return 1
-    print(f"→ building the local judge model (encoder={encoder}, torch-free) …")
+    print("→ building the local judge model (one-time) …")
     try:
         rc = subprocess.call([sys.executable, str(train), "--encoder", encoder], cwd=str(train.parent))
     except OSError as exc:
         print(f"✗ failed to launch training: {exc}")
         return 1
     if rc != 0:
-        print("\n✗ build failed. If a dependency is missing, the core set is torch-free:")
-        print("    uv pip install numpy scikit-learn model2vec joblib      (NO PyTorch needed)")
+        print("✗ build failed — missing a dependency? try: uv pip install numpy scikit-learn model2vec joblib")
         return rc
-    print("✓ sift judge ready → sift/models/sift_judge.joblib")
-    # warm the net_semantic centroid cache so the first guarded egress is fast (<50ms, no rebuild).
+    print("✓ judge model ready")
+    # warm the net_semantic centroid cache so the first guarded egress is fast (silent — optional).
     try:
         from ddbt.judge.embedder import get_encoder
         from ddbt.plugins.net_semantic import NetSemantic
         enc = get_encoder()
-        if enc is not None and NetSemantic()._ensure_centroids(enc):
-            print("✓ net_semantic centroids cached (semantic egress review ready)")
+        if enc is not None:
+            NetSemantic()._ensure_centroids(enc)
     except Exception:  # noqa: BLE001 — optional; the plugin rebuilds on first use if skipped
         pass
     if calibrate:

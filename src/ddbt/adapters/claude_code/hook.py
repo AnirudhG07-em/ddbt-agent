@@ -52,16 +52,11 @@ def _engine(payload: dict) -> Engine:
 _SWATCH = {"none": "🟢", "low": "🟢", "med": "🟡", "high": "🔴"}
 
 
-def _layer(checkpoint: str) -> str:
-    return "ticket" if checkpoint in ("out-of-scope", "grant-fastpath") else "judge"
-
-
 def _reason(d, heat: str | None = None) -> str:
-    """The line Claude Code shows verbatim: 🛡 DDBT marker + deciding layer + risk band + heat +
-    reason. This is how a user tells a DDBT block apart from Claude declining on its own."""
-    heat_bit = f" · heat:{heat}" if heat else ""
-    return (f"🛡 DDBT · {d.state.upper()} · via {_layer(d.checkpoint)} "
-            f"[{d.checkpoint}] {_SWATCH.get(d.risk, '')} risk:{d.risk}{heat_bit} — {d.reason}")
+    """The line Claude Code shows verbatim. REASON FIRST (the possible issue, in plain words), then a
+    small ddbt tag + risk so the user can tell this from Claude declining on its own. We deliberately
+    do NOT name the internal layer/plugin — the user cares about the issue, not which gate fired."""
+    return f"🛡 {d.reason}  — ddbt · {_SWATCH.get(d.risk, '')}risk:{d.risk}"
 
 
 def _pre_output(decision: str, reason: str = "") -> dict:

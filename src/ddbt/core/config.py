@@ -365,7 +365,7 @@ def engine_kwargs(cwd: str | Path | None = None) -> dict:
         "deny_mode": (os.environ.get("DDBT_DENY_MODE") or str(c.get("deny_mode", "block"))).lower(),
         # real deployments are benign-friendly: an off-goal-but-clean action (a goal shift, not an
         # injection) ASKs rather than hard-denies — everyday work isn't suspected. Shell mode → "allow".
-        "goal_shift": (os.environ.get("DDBT_GOAL_SHIFT") or str(c.get("goal_shift", "ask"))).lower(),
+        "goal_shift": str(c.get("goal_shift", "ask")).lower(),
     }
 
 

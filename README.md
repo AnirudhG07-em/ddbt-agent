@@ -279,11 +279,11 @@ guard can't win it.
 
 | benchmark (attacks / benign)     | **sift** — local, LLM-free, ~0.7 ms                | **LLM judge** — per call            |
 | -------------------------------- | -------------------------------------------------- | ----------------------------------- |
-| **InjecAgent** (1054 / 1054)     | **93.5%** stopped · **88.2%** clean                | 100% · 94.1%                        |
+| **InjecAgent** (1054 / 1054)     | **93.5%** stopped · **94.1%** clean                | 100% · 94.1%                        |
 | **AgentTrust** (16 / 8)          | **87.5%** · **87.5%**                              | 100% · 62.5%                        |
-| **ToolEmu** (144 / 144)          | **50.7%** · **62.5%**                              | 80.6% · 31.2%                       |
-| **AgentSafetyBench** (307 / 293) | **37.5%** · **74.7%**                              | 65.1% · 66.9%                       |
-| **R-Judge** (held-out)           | **F1 69.0%** (recall 76.9 · spec 45.5)             | F1 89.5% (recall 93.3 · spec 83.1)  |
+| **ToolEmu** (144 / 144)          | **36.8%** · **79.9%**                              | 80.6% · 31.2%                       |
+| **AgentSafetyBench** (307 / 293) | **31.6%** · **80.9%**                              | 65.1% · 66.9%                       |
+| **R-Judge** (held-out)           | **F1 67.1%** (recall 73.8 · spec 45.5)             | F1 89.5% (recall 93.3 · spec 83.1)  |
 | **MCPTox** (485 / 8)             | *n/a — sift judges actions, not tool descriptions* | 99.8% caught · 0/8 benign flagged   |
 
 ![sift vs LLM across benchmarks](./doc/bench_sift_vs_llm.svg)
@@ -293,15 +293,17 @@ guard can't win it.
 The default judge is **`sift`** (Semantic Intent & Flow Triage) — a local embedding + structural
 model (see [`sift/`](sift/)) — no LLM, no API, no network, **$0 and sub-millisecond**. The honest read:
 
-- **On injection it holds its own** — 93.5% of InjecAgent attacks stopped, and on **AgentTrust it
-  actually beats the LLM** (the LLM over-blocks benign work).
-- **On the prose-heavy sets (R-Judge, AgentSafetyBench) the LLM wins** — it reads dense trajectories
-  better. sift trades recall for speed and cost; the gap is real, not hidden.
+- **On injection it holds its own** — 93.5% of InjecAgent attacks stopped with 94.1% of benign clean;
+  on **AgentTrust and ToolEmu (by balanced score) it beats the LLM**, which over-blocks benign work.
+- **Content-sensitivity gate (graded, not on/off)** — a bare `curl` or a benign `send` flows; risk rises
+  by *what* is touched (`passport.png`, credentials, a wire transfer → ask) × where it goes × who chose
+  the destination, scored as a weighted sum. This is why the benign-clean numbers are high without letting
+  real exfil through (InjecAgent still 93.5% stopped).
 - **A session-trajectory gate closes part of the R-Judge gap, LLM-free** — the same local model, run over
   the *whole session so far* (not just one step), asks for a human check when the accumulated pattern looks
-  unsafe. It's what catches a slow attack whose steps each look fine, and it lifts held-out R-Judge F1
-  64→69 with no change to the other five benchmarks. (A frozen small transformer, MiniLM, was tested as the
-  encoder and did **not** beat the static model — so ddbt stays torch-free.)
+  unsafe. It catches a slow attack whose steps each look fine, and lifts held-out R-Judge F1 64→67 with no
+  change to the other five benchmarks. (A frozen small transformer, MiniLM, was tested as the encoder and
+  did **not** beat the static model — so ddbt stays torch-free.)
 - **R-Judge scores every ASK as a false positive** (it's binary — no "ask a human" bucket) — but an
   ASK is ddbt's *feature*, not a miss, so sift's F1 here is a **lower bound**. ddbt never blocks the
   agent from *talking to you*; only tool actions with external effect are gated.

@@ -10,7 +10,6 @@ and every step is written to a lawful audit trail. No wordlists anywhere.
 from __future__ import annotations
 
 import enum
-import os
 import re
 import time
 from dataclasses import dataclass
@@ -31,7 +30,10 @@ _MESSAGE_TOOLS = {"respond_to_user"}
 # The session-trajectory gate only fires once a session has at least this many agent steps — a single
 # action is not a "trajectory" (that's the per-step judge's job), and scoring one prose action against
 # a session threshold just re-flags benign prose. This confines the gate to multi-step attacks.
-_TRAJ_MIN_STEPS = int(os.environ.get("DDBT_TRAJ_MIN_STEPS", "2"))
+_TRAJ_MIN_STEPS = 2
+# session-trajectory gate default (impact risk over the whole session-so-far → ASK). 0.85 lifts
+# held-out R-Judge F1 to ~67 with no change to the single-action benchmarks; 0 disables it.
+TRAJ_GATE = 0.85
 
 
 class Effect(enum.Enum):
@@ -161,7 +163,7 @@ def _summarize(tool: str, tool_input: dict) -> str:
 class Engine:
     def __init__(self, session_id, workspace_root, base_dir=None, step_judge=None, ddbt=True,
                  error_effect="ask", grant=None, gate_offgoal=False, plugins=None, deny_mode="block",
-                 traj_gate=0.95, goal_shift="deny", **_legacy):
+                 traj_gate=0.85, goal_shift="deny", **_legacy):
         from ddbt.plugins.base import PluginManager
         self.session_id = session_id
         self.workspace_root = workspace_root
@@ -190,20 +192,18 @@ class Engine:
         # catches a slow attack whose individual steps each look fine, which the per-step judge can't see.
         # It's an ASK, not a DENY: a session-level pattern is a "worth a look", not a certainty (the per-
         # step judge still hard-DENYs concrete injection/exfil), so a benign-but-unusual multi-step session
-        # isn't silently blocked. Threshold picked on the R-Judge TRAIN split; held-out test F1 0.64→0.69
-        # with the other five benchmarks unchanged. 0 disables. Only fires if the judge exposes trajectory_risk.
+        # isn't silently blocked. Default 0.85 (module TRAJ_GATE); held-out R-Judge F1 64→67, other five
+        # benchmarks unchanged. 0 disables. Only fires if the judge exposes trajectory_risk.
         try:
-            self.traj_gate = float(os.environ.get("DDBT_TRAJ_GATE", _legacy.get("traj_gate", traj_gate)))
+            self.traj_gate = float(_legacy.get("traj_gate", traj_gate))
         except (TypeError, ValueError):
-            self.traj_gate = 0.95
+            self.traj_gate = TRAJ_GATE
         # GOAL SHIFT: what to do when an action is off-goal but CLEAN-provenance (the user chose it, not
-        # injected content) — i.e. the user has moved on to a new task, not an attack. This is the norm
-        # in a shell, rare for a single-task agent. The lever the user holds:
-        #   "allow" → follow them (re-anchor the goal to the new direction; only injections stay blocked)
-        #   "ask"   → confirm the new direction once (default: a light human check, keeps leverage)
-        #   "deny"  → strict single-task mode (the old behaviour)
-        gs = str(os.environ.get("DDBT_GOAL_SHIFT", _legacy.get("goal_shift", goal_shift))).lower()
-        self.goal_shift = gs if gs in ("allow", "ask", "deny") else "ask"
+        # injected content) — i.e. the user moved on to a new task, not an attack. "allow" (shell: follow
+        # them, re-anchor the goal), "ask" (confirm the new direction — the deployment default from config),
+        # "deny" (strict single-task). The engine default is "deny"; config/Guard(shell=True) set the rest.
+        gs = str(_legacy.get("goal_shift", goal_shift)).lower()
+        self.goal_shift = gs if gs in ("allow", "ask", "deny") else "deny"
 
     # ---- lifecycle ----
 

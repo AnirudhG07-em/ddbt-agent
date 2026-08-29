@@ -12,8 +12,8 @@
 <text x="52" y="158.0" font-size="11" fill="#94a3b8" text-anchor="end">75</text>
 <line x1="60" y1="84.0" x2="836" y2="84.0" stroke="#e2e8f0"/>
 <text x="52" y="88.0" font-size="11" fill="#94a3b8" text-anchor="end">100</text>
-<rect x="88.6" y="109.8" width="46.0" height="254.2" rx="3" fill="#2563eb"/>
-<text x="111.6" y="104.8" font-size="11" font-weight="600" fill="#334155" text-anchor="middle">91</text>
+<rect x="88.6" y="101.4" width="46.0" height="262.6" rx="3" fill="#2563eb"/>
+<text x="111.6" y="96.4" font-size="11" font-weight="600" fill="#334155" text-anchor="middle">94</text>
 <rect x="140.6" y="92.4" width="46.0" height="271.6" rx="3" fill="#f59e0b"/>
 <text x="163.6" y="87.4" font-size="11" font-weight="600" fill="#334155" text-anchor="middle">97</text>
 <text x="137.6" y="386.0" font-size="12.5" font-weight="600" fill="#0f172a" text-anchor="middle">InjecAgent</text>
@@ -24,20 +24,20 @@
 <text x="318.8" y="131.6" font-size="11" font-weight="600" fill="#334155" text-anchor="middle">81</text>
 <text x="292.8" y="386.0" font-size="12.5" font-weight="600" fill="#0f172a" text-anchor="middle">AgentTrust</text>
 <text x="292.8" y="404.0" font-size="10.5" fill="#94a3b8" text-anchor="middle"></text>
-<rect x="399.0" y="205.5" width="46.0" height="158.5" rx="3" fill="#2563eb"/>
-<text x="422.0" y="200.5" font-size="11" font-weight="600" fill="#334155" text-anchor="middle">57</text>
+<rect x="399.0" y="200.5" width="46.0" height="163.5" rx="3" fill="#2563eb"/>
+<text x="422.0" y="195.5" font-size="11" font-weight="600" fill="#334155" text-anchor="middle">58</text>
 <rect x="451.0" y="207.5" width="46.0" height="156.5" rx="3" fill="#f59e0b"/>
 <text x="474.0" y="202.5" font-size="11" font-weight="600" fill="#334155" text-anchor="middle">56</text>
 <text x="448.0" y="386.0" font-size="12.5" font-weight="600" fill="#0f172a" text-anchor="middle">ToolEmu</text>
 <text x="448.0" y="404.0" font-size="10.5" fill="#94a3b8" text-anchor="middle"></text>
-<rect x="554.2" y="206.9" width="46.0" height="157.1" rx="3" fill="#2563eb"/>
-<text x="577.2" y="201.9" font-size="11" font-weight="600" fill="#334155" text-anchor="middle">56</text>
+<rect x="554.2" y="206.4" width="46.0" height="157.6" rx="3" fill="#2563eb"/>
+<text x="577.2" y="201.4" font-size="11" font-weight="600" fill="#334155" text-anchor="middle">56</text>
 <rect x="606.2" y="179.2" width="46.0" height="184.8" rx="3" fill="#f59e0b"/>
 <text x="629.2" y="174.2" font-size="11" font-weight="600" fill="#334155" text-anchor="middle">66</text>
 <text x="603.2" y="386.0" font-size="12.5" font-weight="600" fill="#0f172a" text-anchor="middle">AgentSafetyBench</text>
 <text x="603.2" y="404.0" font-size="10.5" fill="#94a3b8" text-anchor="middle"></text>
-<rect x="709.4" y="192.6" width="46.0" height="171.4" rx="3" fill="#2563eb"/>
-<text x="732.4" y="187.6" font-size="11" font-weight="600" fill="#334155" text-anchor="middle">61</text>
+<rect x="709.4" y="196.8" width="46.0" height="167.2" rx="3" fill="#2563eb"/>
+<text x="732.4" y="191.8" font-size="11" font-weight="600" fill="#334155" text-anchor="middle">60</text>
 <rect x="761.4" y="117.0" width="46.0" height="247.0" rx="3" fill="#f59e0b"/>
 <text x="784.4" y="112.0" font-size="11" font-weight="600" fill="#334155" text-anchor="middle">88</text>
 <text x="758.4" y="386.0" font-size="12.5" font-weight="600" fill="#0f172a" text-anchor="middle">R-Judge</text>

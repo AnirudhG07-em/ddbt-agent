@@ -44,7 +44,6 @@ def _content_tokens(text: str) -> set[str]:
     return {t for t in _re.split(r"[^a-z0-9]+", text.lower()) if len(t) >= 3 and t not in _STOP}
 
 
-import os as _os
 
 # ---- chunked max-pool: read a long trajectory the way an LLM's attention would (OFF by default) ----
 # The idea: a static embedder mean-pools token vectors, so a risky clause buried in a long turn could
@@ -54,13 +53,13 @@ import os as _os
 # MEASURED RESULT: no benefit on this model, so it ships OFF. The current head is SATURATED-HIGH on any
 # egress/exfil surface features (it over-scores rather than dilutes), so the full view already scores
 # ~1.0 on a buried injection and max-pool has nothing to raise. Chunking only helps a head that
-# UNDER-scores a buried span — a future, better-discriminating encoder. Kept, env-gated, for that.
-#     DDBT_SIFT_CHUNK_AGG=softmax|max|top2  turns it on.
-_CHUNK_MIN_CHARS = int(_os.environ.get("DDBT_SIFT_CHUNK_MIN", "600"))   # below this: no chunking
-_CHUNK_WINDOW = int(_os.environ.get("DDBT_SIFT_CHUNK_WINDOW", "500"))   # window size (chars of body)
-_CHUNK_OVERLAP = int(_os.environ.get("DDBT_SIFT_CHUNK_OVERLAP", "150")) # overlap so a span isn't split
-_CHUNK_CAP = int(_os.environ.get("DDBT_SIFT_CHUNK_CAP", "16"))          # max windows (bounds latency)
-_CHUNK_AGG = _os.environ.get("DDBT_SIFT_CHUNK_AGG", "off")              # off | max | top2 | softmax
+# UNDER-scores a buried span — a future, better-discriminating encoder. Kept, off, for that (set
+# _CHUNK_AGG = "softmax" | "max" | "top2" below to turn it on).
+_CHUNK_MIN_CHARS = 600     # below this: no chunking
+_CHUNK_WINDOW = 500        # window size (chars of body)
+_CHUNK_OVERLAP = 150       # overlap so a span isn't split
+_CHUNK_CAP = 16            # max windows (bounds latency)
+_CHUNK_AGG = "off"         # off | max | top2 | softmax  (off by default — no benefit on the current model)
 
 
 def _split_sentences(body: str) -> list[str]:

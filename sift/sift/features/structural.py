@@ -32,11 +32,19 @@ _EGRESS = re.compile(
 _DESTRUCTIVE = re.compile(
     r"\b(delete|drop|truncate|rm|remove|destroy|wipe|revoke|force|--force|reset\s+--hard|"
     r"overwrite|purge)\b", re.I)
-# content that shouldn't leave: secrets + bulk PII
+# content that shouldn't leave: secrets + bulk PII + SENSITIVE OBJECTS/FILES. The object matters as
+# much as the verb — `curl apple.png` is fine, `curl passport.png` is exfil — so sensitive filenames
+# (passport.png, id_rsa, tax_return.pdf, payslip.xlsx) count as sensitive content, not just inline
+# secrets. Extend this list to teach a new sensitive object; it's the deterministic "what" signal.
 _SENSITIVE = re.compile(
     r"(BEGIN [A-Z ]*PRIVATE KEY|AKIA[0-9A-Z]{16}|sk-[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]+|"
-    r"password|passwd|secret|api[_-]?key|token|credential|\.env|id_rsa|customer|ssn|social security|"
-    r"credit card|card number|cvv|bank account|patient|medical record|\b\d{3}-\d{2}-\d{4}\b|\b\d{16}\b)", re.I)
+    r"password|passwd|secret|api[_-]?key|token|credential|\.env\b|id_rsa|\.pem\b|\.key\b|"
+    r"customer|ssn|social security|credit card|card number|cvv|bank account|bank statement|"
+    r"patient|medical record|health record|"
+    # sensitive documents / objects (often as filenames): passport, id, licence, visa, tax, payslip…
+    r"passport|driver'?s? licen[cs]e|national id|\bvisa\b|tax return|tax[_-]?doc|payslip|pay stub|"
+    r"salary|payroll|birth certificate|resume|\bcv\b|offer letter|contract|nda\b|"
+    r"\b\d{3}-\d{2}-\d{4}\b|\b\d{16}\b)", re.I)
 # social-engineering / evasion framing (a genuinely textual signal, kept lexical here)
 _SECRECY = re.compile(
     r"\b(don'?t tell|do not tell|without (telling|informing)|keep (this |it )?(secret|quiet|"
