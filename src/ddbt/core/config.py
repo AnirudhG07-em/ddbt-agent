@@ -38,7 +38,10 @@ DEFAULTS = {
     "gate_offgoal": True,      # benign off-goal step → ask a human, not a hard deny
     "error_effect": "ask",     # judge infra failure → "ask" (human) or "deny" (fail-closed)
     "deny_mode": "block",      # "block" = hard DENY; "override" = DENY→ASK_OVERRIDE (a human may force it)
-    "goal_shift": "ask",       # off-goal but CLEAN (a goal shift, not an injection): "ask" | "allow" (shell) | "deny"
+    "goal_shift": "allow",     # off-goal but CLEAN (a goal shift, not injection) → FOLLOW by default; a
+                               # shift happens too often to gate. "ask" | "allow" (default) | "deny". NOTE:
+                               # high-impact off-goal (sensitive data leaving) still gates regardless — see
+                               # engine._combine; only benign off-goal work flows.
     # reading a SECRET file (e.g. `cat .env`) that the ticket would deny: "ask" (default) offers a
     # redact-output / show-raw / cancel choice (a redactable ASK); "redact" always screens; "deny" blocks.
     "sensitive_read": "ask",
@@ -70,10 +73,11 @@ TEMPLATE = {
     # you CAN force it through, but with a loud warning naming the layer that flagged it and why.
     "deny_mode": "block",
     # what to do when you go off the stated goal but the action is YOURS (clean provenance) — a goal
-    # shift, not an injection. "ask" (default) confirms the new direction; "allow" follows you (best for
-    # a shell, where intent changes constantly); "deny" is strict single-task mode. Injections/harmful
-    # off-goal actions are denied regardless of this setting.
-    "goal_shift": "ask",
+    # shift, not an injection. "allow" (default) follows you — a shift happens too often to gate, and
+    # a shell's intent changes constantly; "ask" confirms the new direction; "deny" is strict single-task
+    # mode. Injections, harmful, AND high-impact off-goal actions (sensitive data leaving) are gated
+    # regardless of this setting — only benign off-goal work flows.
+    "goal_shift": "allow",
     # reading a secret file (`cat .env`) offers redact-output / show-raw / cancel; "redact" = always
     # screen; "deny" = block. Egress of a secret is still denied regardless.
     "sensitive_read": "ask",
@@ -429,7 +433,7 @@ def engine_kwargs(cwd: str | Path | None = None) -> dict:
         "deny_mode": (os.environ.get("DDBT_DENY_MODE") or str(c.get("deny_mode", "block"))).lower(),
         # real deployments are benign-friendly: an off-goal-but-clean action (a goal shift, not an
         # injection) ASKs rather than hard-denies — everyday work isn't suspected. Shell mode → "allow".
-        "goal_shift": str(c.get("goal_shift", "ask")).lower(),
+        "goal_shift": str(c.get("goal_shift", "allow")).lower(),
         "sensitive_read": str(c.get("sensitive_read", "ask")).lower(),
     }
 

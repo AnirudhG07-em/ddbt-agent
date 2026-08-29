@@ -165,7 +165,7 @@ Deterministic layers (2,3) run **before** the judge — an attacker can't talk p
 ### Env overrides
 `DDBT_JUDGE=llm` · `DDBT_PROVIDER` · `DDBT_MODEL` / `DDBT_JUDGE_MODEL` · `DDBT_DENY_MODE` ·
 `DDBT_LLM_PROVIDER` / `DDBT_LLM_MODEL` / `DDBT_LLM_MAX_REQUESTS` · `DDBT_HOME` (default `~/.ddbt`) ·
-`DDBT_SLOW_CHECK` (session-trajectory gate: `off` | `less` (default, 0.98, quiet) | `more` (0.85, aggressive) | a bare 0..1 threshold) ·
+`DDBT_SLOW_CHECK` (fuzzy session-trajectory gate: `off` (default) | `less` (0.98, quiet) | `more` (0.85, aggressive) | a bare 0..1 threshold — the deterministic killchain does slow-exfil regardless) ·
 `DDBT_VERBOSE=1` (narrate allows) · `NO_COLOR`.
 
 ---

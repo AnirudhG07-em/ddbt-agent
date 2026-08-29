@@ -41,28 +41,29 @@ _TRAJ_MIN_STEPS = 2
 # barely discriminates at the session level (a benign shell run ≈0.96 vs a real read→encode→send ≈0.97),
 # so it can't be made precise — only quieter or louder. It is therefore a TUNABLE KNOB, not a fixed
 # global, set by the DDBT_SLOW_CHECK env var so an integration can dial it without code:
-#   off  → disabled (0). Rely purely on the deterministic killchain/provenance (precise, never nags).
-#   less → 0.98 (DEFAULT). On, but sits ABOVE the benign interactive ceiling (measured: an ordinary shell
-#          run tops out ≈0.974), so day-to-day work never trips it — only an extreme accumulated session
-#          does. A genuinely quiet, integration-safe backstop.
-#   more → 0.85 — aggressive; catches more slow attacks over longer ToolEmu/R-Judge trajectories (recall
-#          74%) but ASKs on ~half of benign multi-step sessions. For non-interactive audit/batch runs.
+#   off  → disabled (0, DEFAULT). Rely purely on the deterministic killchain/provenance — the killchain
+#          already does slow-exfil detection precisely, and ONLY at a network send, so this fuzzy head is
+#          redundant noise for interactive use.
+#   less → 0.98 — on, but sits ABOVE the benign interactive ceiling (measured: an ordinary shell run tops
+#          out ≈0.974), so day-to-day work rarely trips it. A quiet opt-in backstop.
+#   more → 0.85 — aggressive; catches more over longer ToolEmu/R-Judge trajectories (recall 74%) but ASKs
+#          on ~half of benign multi-step sessions. For non-interactive audit/batch runs only.
 # A bare number in the env var is honoured too (advanced). The DETERMINISTIC killchain runs regardless —
 # it, not this fuzzy head, is what actually stops read→encode→send exfil, and it never nags.
 _SLOW_LEVELS = {"off": 0.0, "less": 0.98, "more": 0.85}
 
 
 def _resolve_slow_check(raw: str | None) -> float:
-    """Map DDBT_SLOW_CHECK (off|less|more, or a bare 0..1 float) → a traj_gate threshold. Default: less."""
+    """Map DDBT_SLOW_CHECK (off|less|more, or a bare 0..1 float) → a traj_gate threshold. Default: off."""
     if raw is None or not raw.strip():
-        return _SLOW_LEVELS["less"]
+        return _SLOW_LEVELS["off"]
     key = raw.strip().lower()
     if key in _SLOW_LEVELS:
         return _SLOW_LEVELS[key]
     try:
         return min(1.0, max(0.0, float(key)))   # advanced: an explicit threshold
     except ValueError:
-        return _SLOW_LEVELS["less"]              # unrecognised → the safe default, not a crash
+        return _SLOW_LEVELS["off"]               # unrecognised → the safe default, not a crash
 
 
 TRAJ_GATE = _resolve_slow_check(os.environ.get("DDBT_SLOW_CHECK"))
@@ -520,6 +521,12 @@ class Engine:
             # off-goal action is a benign goal shift the user may follow.
             if injection_linked or (self.ddbt and verdict.harmful):
                 return Effect.DENY, "goal-fidelity"  # axis 1 — real injection / harmful deviation
+            # HIGH-IMPACT content still gates even when we follow the user off-script. "Follow the user"
+            # (goal_shift="allow", shell posture) means benign off-goal commands flow — NOT that sending a
+            # passport / secret key / customer file out the door is waved through as "a new task". The
+            # content-sensitivity signal is independent of the fuzzy session gate: it fires here regardless.
+            if self.ddbt and verdict.high_impact:
+                return Effect.ASK, "gate"            # sensitive data leaving — confirm even on a goal shift
             if self.goal_shift == "allow":
                 return Effect.ALLOW, "goal-shift"    # follow the user (re-anchor happens in evaluate_action)
             if self.goal_shift == "ask" or self.gate_offgoal:
