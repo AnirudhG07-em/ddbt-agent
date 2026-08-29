@@ -53,10 +53,12 @@ _SWATCH = {"none": "🟢", "low": "🟢", "med": "🟡", "high": "🔴"}
 
 
 def _reason(d, heat: str | None = None) -> str:
-    """The line Claude Code shows verbatim. REASON FIRST (the possible issue, in plain words), then a
-    small ddbt tag + risk so the user can tell this from Claude declining on its own. We deliberately
-    do NOT name the internal layer/plugin — the user cares about the issue, not which gate fired."""
-    return f"🛡 {d.reason}  — ddbt · {_SWATCH.get(d.risk, '')}risk:{d.risk}"
+    """The line Claude Code shows verbatim: the common ddbt preamble + the finding + the risk band —
+    a consistent wrapper across every block/ask. Plugin findings already carry the '<detectors ·
+    tactic>: We think this operation …' body; judge findings (a plain verb phrase) get the lede here."""
+    from ddbt.plugins.base import finding_message, wrap_message
+    body = d.reason if d.checkpoint.startswith("plugin:") else finding_message("", d.reason)
+    return f"🛡 {wrap_message(body)} · {_SWATCH.get(d.risk, '')}risk:{d.risk}"
 
 
 def _pre_output(decision: str, reason: str = "") -> dict:

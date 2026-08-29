@@ -27,6 +27,10 @@ _NOOP_TOOLS = {"TodoWrite"}
 # they are never a silent hard-block. Surfacing/quoting injected content back to the user is
 # transparency, not a dangerous deviation — and a message can't exfiltrate (the user is trusted).
 _MESSAGE_TOOLS = {"respond_to_user"}
+# read-only tools / shell commands — reading a secret FILE locally is not exfil; it can be shown with
+# its sensitive values redacted (ddbt screen) instead of hard-denied. Egress of a secret is still denied.
+_READ_TOOLS = {"Read", "LS", "Grep", "Glob", "NotebookRead"}
+_READ_CMD = re.compile(r"^\s*(cat|head|tail|less|more|bat|xxd|strings|grep|rg|nl|od|sort|uniq|wc)\b", re.I)
 # The session-trajectory gate only fires once a session has at least this many agent steps — a single
 # action is not a "trajectory" (that's the per-step judge's job), and scoring one prose action against
 # a session threshold just re-flags benign prose. This confines the gate to multi-step attacks.
@@ -62,6 +66,8 @@ class Decision:
     risk: str = "none"  # chromatic band (chromatics.classify): none|low|med|high — telemetry only
     audit_id: int = 0
     rewritten_input: dict | None = None  # SANITIZE: the redacted args the caller should run instead
+    redactable: bool = False  # a sensitive READ: the caller may run it and screen the OUTPUT (ddbt screen)
+                              # instead of denying — the basis of a "redact / show raw / cancel" prompt
 
     @property
     def overridable(self) -> bool:
@@ -101,6 +107,7 @@ class Decision:
             "needs_confirmation": self.needs_confirmation,
             "risk": self.risk,                      # telemetry band: none | low | med | high
             "rewritten_input": self.rewritten_input,  # sanitize: redacted args to run instead, else null
+            "redactable": self.redactable,          # sensitive read: offer redact-output / show-raw / cancel
         }
 
 
@@ -150,6 +157,17 @@ def _who(labels: list[str]) -> str:
     return "you"
 
 
+def _is_read(tool: str, tool_input: dict) -> bool:
+    """A read-only action: a read tool, or a Bash command that just reads (cat/head/grep/…). Used to
+    offer redaction on a sensitive file instead of a hard block — reading locally is not exfil."""
+    if tool in _READ_TOOLS:
+        return True
+    if tool == "Bash" and isinstance(tool_input, dict):
+        cmd = str(tool_input.get("command", ""))
+        return bool(_READ_CMD.match(cmd)) and not (">" in cmd or "|" in cmd or "curl" in cmd or "scp" in cmd)
+    return False
+
+
 def _summarize(tool: str, tool_input: dict) -> str:
     """A short, structural one-liner for the audit log (not a decision input)."""
     if not isinstance(tool_input, dict):
@@ -163,7 +181,7 @@ def _summarize(tool: str, tool_input: dict) -> str:
 class Engine:
     def __init__(self, session_id, workspace_root, base_dir=None, step_judge=None, ddbt=True,
                  error_effect="ask", grant=None, gate_offgoal=False, plugins=None, deny_mode="block",
-                 traj_gate=0.85, goal_shift="deny", **_legacy):
+                 traj_gate=0.85, goal_shift="deny", sensitive_read="deny", **_legacy):
         from ddbt.plugins.base import PluginManager
         self.session_id = session_id
         self.workspace_root = workspace_root
@@ -204,6 +222,11 @@ class Engine:
         # "deny" (strict single-task). The engine default is "deny"; config/Guard(shell=True) set the rest.
         gs = str(_legacy.get("goal_shift", goal_shift)).lower()
         self.goal_shift = gs if gs in ("allow", "ask", "deny") else "deny"
+        # SENSITIVE READ: reading a secret FILE (that the ticket would otherwise deny) is not exfil — it
+        # can be shown with sensitive values REDACTED. "deny" (default) = hard block; "ask" = offer the
+        # choice (redact output / show raw / cancel) via a redactable ASK; "redact" = allow + always screen.
+        sr = str(_legacy.get("sensitive_read", sensitive_read)).lower()
+        self.sensitive_read = sr if sr in ("deny", "ask", "redact") else "deny"
 
     # ---- lifecycle ----
 
@@ -271,6 +294,19 @@ class Engine:
         gcheck = None
         if self.grant is not None:
             gcheck = self.grant.check(tool_name, tool_input, now=time.time(), used=self._grant_used())
+            if gcheck.effect == "deny" and self.sensitive_read != "deny" and _is_read(tool_name, tool_input):
+                # a READ of a restricted (secret) file is not exfil — offer to show it with sensitive
+                # values REDACTED instead of hard-denying. "redact" → allow + always screen the output;
+                # "ask" → a redactable ASK the caller renders as "redact output / show raw / cancel".
+                redact = self.sensitive_read == "redact"
+                eff = Effect.ALLOW if redact else Effect.ASK
+                reason = ("reads a file with sensitive values — the output will be redacted" if redact
+                          else "reads a file with sensitive values — redact the output, show it raw, or cancel")
+                aid = self.audit.decision(checkpoint="sensitive-read", state=eff.value, tool=tool_name,
+                                          summary=_summarize(tool_name, tool_input), reason=reason)
+                return Decision(eff, eff.value, "sensitive-read", reason, redactable=True,
+                                risk=chromatics.classify(eff.value, "grant-fastpath", True, False, False, who),
+                                audit_id=aid)
             if gcheck.effect == "deny":
                 # a floor breach means the session is being probed — ratchet suspicion (atomic).
                 self.store.increment_meta("suspicion", 3)
@@ -294,13 +330,15 @@ class Engine:
         # dataflow exfil chains, PII egress). A plugin only tightens: DENY short-circuits; ASK is a floor.
         plugin_floor = None
         if self.plugins:
-            from ddbt.plugins.base import PluginContext
+            from ddbt.plugins.base import PluginContext, finding_message, finding_tag
             pctx = PluginContext(session_id=self.session_id, goal=self.goal, provenance=who, store=self.store)
             pv = self.plugins.pre_check(tool_name, tool_input, pctx)
             if pv is not None and pv.effect == "deny":
                 self.store.increment_meta("suspicion", 3)
-                lead = (pv.headline + " ") if pv.headline else ""
-                base = lead + pv.reason + (f" — try: {pv.suggestion}" if pv.suggestion else "")
+                # "<detectors> · <Tactic>: We think this operation <finding>." — detector classification +
+                # MITRE tactic (no codes), marking EVERY detector that flagged (pv.flagged).
+                base = (finding_message(finding_tag(pv.plugin, pv.tactic, pv.flagged), pv.reason)
+                        + (f" — try: {pv.suggestion}" if pv.suggestion else ""))
                 effect, reason = self._as_deny(base, f"plugin:{pv.plugin}")
                 aid = self.audit.decision(checkpoint=f"plugin:{pv.plugin}", state=effect.value, tool=tool_name,
                                           summary=_summarize(tool_name, tool_input), reason=reason,
@@ -339,10 +377,11 @@ class Engine:
         # a plugin ASK-floor escalates an otherwise-ALLOW step to a human check
         if plugin_floor is not None and effect is Effect.ALLOW:
             effect, checkpoint = Effect.ASK, f"plugin:{plugin_floor.plugin}"
-            # the plugin is the REASON for the ASK — show only its concern (e.g. the destination), NOT
-            # the judge's separate content verdict ("clean · risk=0.10"), which would read as contradictory.
-            lead = (plugin_floor.headline + " ") if plugin_floor.headline else ""
-            verdict.reason = f"{lead}{plugin_floor.reason}"
+            # the plugin is the REASON for the ASK — show its detector alias(es) + MITRE tactic + concern,
+            # NOT the judge's separate content verdict ("clean · risk=0.10") which would read contradictory.
+            from ddbt.plugins.base import finding_message, finding_tag
+            tag = finding_tag(plugin_floor.plugin, plugin_floor.tactic, plugin_floor.flagged)
+            verdict.reason = finding_message(tag, plugin_floor.reason)
         reason = verdict.reason
         # GOAL-SHIFT RE-ANCHOR: when we follow the user to a new direction (goal_shift="allow", e.g. a
         # shell), adopt it as the working goal so the FOLLOW-UP steps read as on-goal instead of each
@@ -353,9 +392,9 @@ class Engine:
             if new_goal:
                 self.goal = new_goal
                 self.store.set_meta("goal", self.goal)
-            reason = verdict.reason or "new direction (you initiated it, not injected) — following your lead"
+            reason = verdict.reason or "is a new direction you started (not from injected content)"
         elif checkpoint == "goal-shift":  # ASK on the shift — name it so the human sees a new direction
-            reason = "this looks like a new task (you initiated it, not injected) — confirm to proceed"
+            reason = "is a new task you started (not from injected content)"
         # deny_mode="override" → a judge/combine DENY becomes an overridable, loudly-warned ASK_OVERRIDE
         if effect is Effect.DENY:
             effect, reason = self._as_deny(verdict.reason, checkpoint)
@@ -380,8 +419,7 @@ class Engine:
             traj_r = traj_fn(self._traj_text()) if traj_fn else None
             if traj_r is not None and traj_r >= self.traj_gate:
                 effect, checkpoint = Effect.ASK, "session-trajectory"
-                reason = (f"the steps so far combine into a pattern worth a human look "
-                          f"(session-trajectory risk {traj_r:.2f})")
+                reason = "is part of a sequence of steps that together look unsafe"
 
         if not verdict.error:
             # this step's evidence tightens FUTURE steps; a downgraded block still counts as "blocked"

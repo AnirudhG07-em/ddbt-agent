@@ -6,6 +6,9 @@
   "gate_offgoal": true,
   "error_effect": "ask",
   "deny_mode": "block",
+  "goal_shift": "ask",
+  "sandbox_config": "~/.em-bash/config/settings.json",
+  "sensitive_read": "ask",
   "rulesets": [],
   "llm": {
     "provider": null,

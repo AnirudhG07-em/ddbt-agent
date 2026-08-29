@@ -498,8 +498,8 @@ def test_hook_reason_is_attributed_and_chromatic():
 
     d = Decision(Effect.DENY, "deny", "out-of-scope", "email outside the grant", risk="high")
     line = _reason(d)
-    # reason FIRST, a ddbt marker + risk so it's distinguishable from Claude — but NO internal
-    # layer/plugin name (the user cares about the issue, not which gate fired).
-    assert line.startswith("🛡 email outside the grant")
-    assert "ddbt" in line and "risk:high" in line
-    assert "out-of-scope" not in line and "ticket" not in line
+    # common ddbt preamble + "We think this operation <finding>" + risk band; NO internal layer name
+    # and NO ATT&CK codes (the user cares about the issue, not which gate fired).
+    assert line.startswith("🛡 ddbt: We have detected")
+    assert "We think this operation email outside the grant" in line and "risk:high" in line
+    assert "out-of-scope" not in line and "T1" not in line

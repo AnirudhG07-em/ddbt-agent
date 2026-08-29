@@ -16,6 +16,7 @@ dependencies = [
     "joblib>=1.3",
     "anthropic>=0.40", # flagged LLM fallback (DDBT_JUDGE=llm)
     "pytest>=9.1.0",
+    "presidio>=2.2.364",
 ]
 
 [project.optional-dependencies]

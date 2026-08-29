@@ -88,6 +88,19 @@ class MitreGuard(Plugin):
         if not hit:
             return None
         tactic, tech, verdict, why = hit
-        # intuitive one-liner from the signature's plain `why`; "— proceed?" only when it's an ASK.
-        msg = f"this {why}" + (" — proceed?" if verdict == "ask" else "")
-        return PreVerdict(verdict, msg, self.name)
+        msg = why   # the plain verb-phrase `why` ("opens a reverse shell"); the engine wraps it uniformly.
+        # map by the signature's OWN technique code (e.g. T1496) → the matching mitre category, so the
+        # tag shows the precise technique (a miner is Resource Hijacking T1496, not Data Destruction).
+        code = tech.split()[0].split("/")[0]
+        return PreVerdict(verdict, msg, self.name, tactic=_TECH_KEY.get(code, ""))
+
+
+# signature technique code → sift.data.mitre category key (whose technique_id renders in the tag)
+_TECH_KEY = {
+    "T1567": "exfiltration", "T1562": "security_tampering", "T1070": "deception",
+    "T1490": "security_tampering", "T1548": "privilege_escalation", "T1543": "backdoor",
+    "T1053": "backdoor", "T1059": "backdoor", "T1496": "resource_abuse",
+    "T1485": "catastrophic_destruction", "T1561": "catastrophic_destruction",
+    "T1113": "surveillance", "T1123": "surveillance", "T1056": "surveillance",
+    "T1552": "secret_theft", "T1195": "supply_chain",
+}

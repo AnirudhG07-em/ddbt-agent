@@ -185,6 +185,6 @@ def lookup(category: str) -> Mitre:
 
 
 def describe(category: str, decision: str | None = None) -> str:
-    """A plain, intuitive statement of the detected tactic for the user — no ATT&CK codes. (The exact
-    tactic/technique IDs still live in `lookup()`/MAP for the audit log and any machine consumer.)"""
-    return f"looks like {friendly_name(category)}"
+    """A plain VERB-PHRASE finding for a detected tactic — no ATT&CK codes (the wrapper adds the common
+    'We think this operation …' lede). E.g. 'resembles personal or customer data leaving your machine'."""
+    return f"resembles {friendly_name(category)}"

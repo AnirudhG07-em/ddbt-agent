@@ -159,6 +159,16 @@ class SiftJudge:
                              min(1.0, 0.7 * s.model_risk + 0.5 * impact_sev))
             harmful = harm_score >= bands.tau_deny
             high_impact = impact_sev >= GATE_SENS   # graded severity clears the human-check gate
+            # VERB-PHRASE finding chosen by WHAT drove the gate — the wrapper adds the common lede so it
+            # reads "We think this operation <finding>." (no jargon, no "clean" shown on an ASK).
+            if high_impact and not harmful and exfil_sev >= 0.30:
+                reason = f"involves {_friendly_name(mitre_cat)}"
+            elif high_impact and not harmful and st.is_destructive:
+                reason = "could delete or overwrite data"
+            elif bulk_harm and s.model_risk < bands.tau_deny:
+                reason = "is a bulk operation over many records at once"
+            else:
+                reason = s.reason
             return Verdict(
                 serves_goal=(s.risk < bands.tau_ask and not deviation and not matched_behavior),
                 deviation=deviation,
@@ -169,12 +179,7 @@ class SiftJudge:
                 accesses_secrets=bool(st.payload_sensitive),
                 external_exfil=bool(st.has_external_dest and (st.sink_from_tool_output or st.sink_unknown)),
                 injection_suspected=bool(injected),
-                # a calm ONE-LINE reason when the medium-risk gate fires on sensitive content — names WHAT
-                # was detected in plain words, no jargon dump (parallels the ASK_OVERRIDE one-liner style).
-                reason=(f"This looks like it involves {_friendly_name(mitre_cat)} — okay to proceed?"
-                        if (high_impact and not harmful and exfil_sev >= 0.30)
-                        else ("this looks like a bulk operation over many records at once"
-                              if bulk_harm and s.model_risk < bands.tau_deny else s.reason)),
+                reason=reason,
             )
         except Exception as exc:  # fail CLOSED, flagged as error (not a real detection)
             return Verdict.errored(f"sift judge unavailable ({type(exc).__name__}: {exc})"[:200])

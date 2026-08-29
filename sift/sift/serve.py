@@ -217,7 +217,7 @@ class SiftScorer:
         if decision == "ALLOW" and not matched:
             reason = "clean"
         elif matched:
-            reason = "this matches a rule you set for this workspace — proceed?"
+            reason = "matches a rule you set for this workspace"   # verb phrase; wrapper adds the lede
         else:  # ASK / DENY → name the tactic in plain words (no ATT&CK codes)
             cat = ""
             if self.protos is not None:

@@ -39,6 +39,13 @@ DEFAULTS = {
     "error_effect": "ask",     # judge infra failure → "ask" (human) or "deny" (fail-closed)
     "deny_mode": "block",      # "block" = hard DENY; "override" = DENY→ASK_OVERRIDE (a human may force it)
     "goal_shift": "ask",       # off-goal but CLEAN (a goal shift, not an injection): "ask" | "allow" (shell) | "deny"
+    # reading a SECRET file (e.g. `cat .env`) that the ticket would deny: "ask" (default) offers a
+    # redact-output / show-raw / cancel choice (a redactable ASK); "redact" always screens; "deny" blocks.
+    "sensitive_read": "ask",
+    # path to an EXTERNAL shell-sandbox settings file (e.g. em-bash). ddbt reads it at load time and
+    # UNIONS it in: its allowedDomains → trusted web hosts, its secret denyRead/denyWrite → the file deny
+    # floor, its deniedDomains → web deny. Kept out of ddbt.json so it stays in sync with the sandbox.
+    "sandbox_config": None,    # e.g. "~/.em-bash/config/settings.json" — absolute, ~, or project-relative
     "policy": None,            # inline capability ticket (the deterministic allow/deny floor)
     "behaviors": {},           # workspace semantic rules for the sift judge (NL or taxonomy) — no retrain
     "rulesets": [],            # names of REUSABLE rule-packs in ~/.ddbt/rules/<name>/ to fold in (additive)
@@ -67,6 +74,9 @@ TEMPLATE = {
     # a shell, where intent changes constantly); "deny" is strict single-task mode. Injections/harmful
     # off-goal actions are denied regardless of this setting.
     "goal_shift": "ask",
+    # reading a secret file (`cat .env`) offers redact-output / show-raw / cancel; "redact" = always
+    # screen; "deny" = block. Egress of a secret is still denied regardless.
+    "sensitive_read": "ask",
 
     # Reusable rule-packs (in ~/.ddbt/rules/, shared across projects) this project opts into. Author one
     # for any tool with:  ddbt create-rules "notion-cli"  — it drafts good/bad rules, you verify, it folds
@@ -250,8 +260,62 @@ def _load_raw(cwd_key: str | None) -> str:
                     union.append(x)
         if union or _dig(merged, path) is not None:
             _bury(merged, path, union)
+    _apply_sandbox(merged, cwd)                     # union an external shell-sandbox file, if pointed to
     _fold_rulesets(merged)                          # resolve "rulesets" refs → additive behaviors/exemplars
     return json.dumps(merged)
+
+
+# shell-sandbox secret DIRS → dir/* ; and denyWrite ext/name patterns → recursive globs
+_SB_DIRS = {"~/.ssh", "~/.aws", "~/.gnupg", "~/.config/gcloud"}
+_SB_WRITE = {".env": "**/.env*", ".env.": "**/.env*", ".pem": "**/*.pem", "*.key": "**/*.key"}
+
+
+def _sandbox_path(raw: str, cwd: str | None) -> Path | None:
+    """Resolve the sandbox_config path: ~-expanded, or absolute, or relative to the project root."""
+    if not raw:
+        return None
+    p = Path(os.path.expanduser(str(raw)))
+    if not p.is_absolute():
+        p = project_root(cwd) / p
+    return p if p.is_file() else None
+
+
+def _apply_sandbox(merged: dict, cwd: str | None) -> None:
+    """UNION an external shell-sandbox settings file (em-bash-style) into the policy: allowedDomains →
+    web.allow (trusted), deniedDomains → web.deny, secret denyRead/denyWrite → files.deny. Deny is
+    additive; the sandbox's write-allow is intentionally ignored (ddbt guards data-flow, not write path).
+    Never fails a load — a missing/broken sandbox file just leaves the policy unchanged."""
+    p = _sandbox_path(merged.get("sandbox_config"), cwd)
+    if p is None:
+        return
+    try:
+        sb = json.loads(p.read_text())
+    except (OSError, json.JSONDecodeError):
+        return
+    net, fs = sb.get("network", {}) or {}, sb.get("filesystem", {}) or {}
+    policy = merged.get("policy")
+    if not isinstance(policy, dict):
+        policy = {}
+        merged["policy"] = policy
+
+    def _union(section: str, key: str, values: list) -> None:
+        sec = policy.setdefault(section, {})
+        if not isinstance(sec, dict):
+            sec = {}; policy[section] = sec
+        cur = list(sec.get(key, []) or [])
+        for v in values:
+            if v not in cur:
+                cur.append(v)
+        sec[key] = cur
+
+    _union("web", "allow", sorted({str(d).lstrip(".").lower() for d in net.get("allowedDomains", [])}))
+    _union("web", "deny", sorted({str(d).lstrip(".").lower() for d in net.get("deniedDomains", [])}))
+    deny = []
+    for r in fs.get("denyRead", []):
+        r = str(r).rstrip("/"); deny.append(r + "/*" if r in _SB_DIRS else r)
+    for w in fs.get("denyWrite", []):
+        w = str(w); deny.append(_SB_WRITE.get(w, w.rstrip("/") + ("/*" if w.rstrip("/") in _SB_DIRS else "")))
+    _union("files", "deny", [d for d in deny if d])
 
 
 def _fold_rulesets(merged: dict) -> None:
@@ -366,6 +430,7 @@ def engine_kwargs(cwd: str | Path | None = None) -> dict:
         # real deployments are benign-friendly: an off-goal-but-clean action (a goal shift, not an
         # injection) ASKs rather than hard-denies — everyday work isn't suspected. Shell mode → "allow".
         "goal_shift": str(c.get("goal_shift", "ask")).lower(),
+        "sensitive_read": str(c.get("sensitive_read", "ask")).lower(),
     }
 
 
