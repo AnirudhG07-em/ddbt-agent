@@ -43,6 +43,9 @@ def _quiet_hub():
 
 DEFAULT = "model2vec"
 MODEL2VEC_ID = "minishlab/potion-base-32M"
+MODEL2VEC_8M_ID = "minishlab/potion-base-8M"          # "sift-mini": ~4x smaller (general)
+MODEL2VEC_CODE_ID = "minishlab/potion-code-16M"       # code-domain static model — matches our command/tool inputs
+MODEL2VEC_RETRIEVAL_ID = "minishlab/potion-retrieval-32M"  # retrieval/similarity-tuned
 MINILM_ID = "sentence-transformers/all-MiniLM-L6-v2"
 
 
@@ -116,6 +119,9 @@ class Model2VecEncoder(Encoder):
 
     def __init__(self, model_id: str = MODEL2VEC_ID):
         import contextlib
+        # distinct name per variant so the train-time encoder guard matches the requested encoder
+        self.name = {MODEL2VEC_8M_ID: "model2vec-8m", MODEL2VEC_CODE_ID: "model2vec-code",
+                     MODEL2VEC_RETRIEVAL_ID: "model2vec-retrieval"}.get(model_id, "model2vec")
         _quiet_hub()
         # model2vec/huggingface also print reconstruct/download lines to stdout — swallow them during
         # the one-time load so nothing reaches the terminal (or the hook's stdout).
@@ -154,7 +160,11 @@ class MiniLMEncoder(Encoder):
         )
 
 
-_BUILDERS = {"model2vec": Model2VecEncoder, "minilm": MiniLMEncoder, "hashing": HashingEncoder}
+_BUILDERS = {"model2vec": Model2VecEncoder,
+             "model2vec-8m": lambda: Model2VecEncoder(MODEL2VEC_8M_ID),         # sift-mini (general, 8M)
+             "model2vec-code": lambda: Model2VecEncoder(MODEL2VEC_CODE_ID),     # code-domain, 16M
+             "model2vec-retrieval": lambda: Model2VecEncoder(MODEL2VEC_RETRIEVAL_ID),  # retrieval-tuned, 32M
+             "minilm": MiniLMEncoder, "hashing": HashingEncoder}
 _CACHE: dict[str, Encoder] = {}
 
 

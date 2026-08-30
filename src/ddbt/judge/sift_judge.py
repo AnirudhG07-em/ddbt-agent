@@ -34,15 +34,12 @@ GATE_SENS = 0.35
 
 # MITRE tactics that mean "sensitive DATA is present" — drive the content gate (a yellow read/send flag).
 _CONTENT_TACTICS = frozenset({"exfiltration", "secret_theft", "surveillance", "financial_harm"})
-# MITRE tactics that mean "a HARMFUL ACTION" — lift the harm/impact score (recover ToolEmu-style
-# recognition) but do NOT drive the content read-gate, so they never prompt on a benign READ. Recon
-# tactics (discovery, supply_chain, reconnaissance) are DELIBERATELY in neither set — they matched benign
-# work (`whoami`, `cat package.json`) and caused the false positives we removed.
-_HARM_TACTICS = frozenset({
-    "catastrophic_destruction", "privilege_escalation", "lateral_movement", "backdoor",
-    "security_tampering", "resource_abuse", "impersonation", "injection", "unauthorized_change",
-    "denial_of_service", "harmful_content", "mass_action", "deception", "financial_harm",
-})
+# HARMFUL-ACTION tactics that lift the impact score (→ a gate/ASK). DELIBERATELY NARROW and unambiguous:
+# fraud/impersonation, malware/phishing, reverse-shell C2, crypto-mining. The broad tactics were tried
+# and reverted — they matched benign work ("production", "commit", "all users", "cron") or session
+# history ("silently"/"quietly"). Everything here should be attack-specific; their lexicons are pruned to
+# phrases that don't plausibly occur in normal dev/shell work. (financial_harm already gates via content.)
+_HARM_TACTICS = frozenset({"impersonation", "harmful_content", "backdoor", "resource_abuse"})
 
 
 def _friendly_name(category: str) -> str:
@@ -151,7 +148,7 @@ class SiftJudge:
                 cat = _mitre_lex.sensitive_tactic(f"{facts.tool} {facts.args}") or ""
                 mitre_cat = cat if cat in _CONTENT_TACTICS else ""   # data present → content gate (yellow)
                 mitre_hit = 1.0 if mitre_cat else 0.0
-                harm_cat = cat if cat in _HARM_TACTICS else ""       # harmful action → harm score (not read gate)
+                harm_cat = cat if cat in _HARM_TACTICS else ""       # specific harmful action → impact
                 harm_hit = 1.0 if harm_cat else 0.0
             except Exception:
                 pass
@@ -170,7 +167,7 @@ class SiftJudge:
                 + 0.15 * st.secrecy_framing
             # IMPACT severity = exfil + destruction (worse in bulk) + a matched workspace rule.
             impact_sev = exfil_sev + 0.6 * st.is_destructive * (0.6 + 0.4 * st.bulk_scope) \
-                + 0.5 * float(matched_behavior) + 0.5 * harm_hit   # a harmful-action lexicon lifts impact
+                + 0.5 * float(matched_behavior) + 0.5 * harm_hit   # a SPECIFIC harmful-action match lifts impact
             # HARM = learned model risk, FLOORED by the deterministic mass-harm rule, LIFTED by impact —
             # so a full-signal exfil (sensitive + external + attacker-chosen + bulk) reaches DENY even if
             # the model alone was unsure, and a mass-destruction always denies. (Replaces `model or bulk`.)
@@ -189,7 +186,7 @@ class SiftJudge:
             elif st.is_destructive and (high_impact or harmful):
                 reason = "could delete or overwrite data"
             elif harm_cat and (high_impact or harmful):
-                reason = f"involves {_friendly_name(harm_cat)}"           # a recognized harmful action
+                reason = f"involves {_friendly_name(harm_cat)}"           # a specific harmful action
             elif bulk_harm and s.model_risk < bands.tau_deny:
                 reason = "is a bulk operation over many records at once"
             elif s.reason and s.reason != "clean":

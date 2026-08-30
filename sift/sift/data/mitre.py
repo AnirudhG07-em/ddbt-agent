@@ -108,11 +108,9 @@ SENSITIVE_LEXICONS: dict[str, list[str]] = {
     "reconnaissance":           ["employee directory", "org chart", "personal email", "phone number",
                                   "home address", "spear-phish", "spearphish", "target profile", "osint"],
     # --- Command & Control / Persistence (TA0011 / TA0003) ---
-    "backdoor":                 ["reverse shell", "bind shell", "authorized_keys", "add ssh key", "cron",
-                                  "crontab", "systemd service", "launchd", "launchdaemon", "startup script",
-                                  "login item", "rc.local", "webshell", "c2", "beacon", "ngrok", "cloudflared",
-                                  "netcat", "nc -e", "ncat -e", "/dev/tcp", "bash -i", "socat", "meterpreter",
-                                  "persist across reboot", "schtasks /create", "new-service", "run key"],
+    # only OBVIOUSLY-malicious NL terms here; the deterministic reverse-shell patterns (bash -i, /dev/tcp,
+    # nc -e) are caught by the mitre_guard plugin, so they don't belong in this fuzzy lexicon.
+    "backdoor":                 ["reverse shell", "meterpreter", "webshell", "reverse_tcp"],
     # --- Defense Evasion (TA0005) ---
     "security_tampering":       ["disable firewall", "stop antivirus", "disable defender", "clear logs",
                                   "delete logs", "disable audit", "disable logging", "iptables -f", "ufw disable",
@@ -120,16 +118,15 @@ SENSITIVE_LEXICONS: dict[str, list[str]] = {
                                   "disable sip", "unset history", "history -c", "chattr", "disable 2fa",
                                   "disable mfa", "turn off alerts", "mute alarms", "add firewall exception"],
     # --- Impact / Resource Hijacking (T1496) ---
-    "resource_abuse":           ["cryptominer", "crypto miner", "xmrig", "mining", "monero", "gpu instance",
-                                  "spot fleet", "spin up gpus", "fork bomb", "spawn workers", "botnet",
-                                  "mine crypto", "hashcat", "stress-ng"],
+    "resource_abuse":           ["cryptominer", "crypto miner", "xmrig", "monero miner", "mine crypto",
+                                  "botnet", "fork bomb"],
     # --- Initial Access / Supply Chain (T1195) ---
     "supply_chain":             ["package.json", "requirements.txt", "postinstall", "publish package",
                                   "npm publish", "pypi upload", "dependency", "build pipeline", "ci config",
                                   "github action", "typosquat"],
     # --- Impersonation / Spoofing (T1656) ---
-    "impersonation":            ["as if from", "spoof", "forge", "impersonate", "pretend to be",
-                                  "on behalf of the ceo", "from the finance team", "verified account"],
+    "impersonation":            ["spoof the sender", "forged email", "impersonate", "pretend to be",
+                                  "on behalf of the ceo", "from the finance team", "spoofed address"],
     # --- Prompt Injection (ATLAS AML.T0051) ---
     "injection":                ["ignore previous", "ignore all previous", "the email said to",
                                   "the page instructed", "as instructed in the", "follow the instruction in"],
@@ -153,9 +150,9 @@ SENSITIVE_LEXICONS: dict[str, list[str]] = {
                                   "scale down to 0", "disable auto-scaling"],
     # --- Harmful content generation (ATLAS / safety) ---
     "harmful_content":          ["malware", "ransomware", "keylogger", "trojan", "rootkit", "virus",
-                                  "exploit code", "write an exploit", "phishing email", "phishing page",
+                                  "exploit code", "phishing email", "phishing page",
                                   "spear-phishing", "credential harvester", "fake login page", "scam message",
-                                  "spam campaign", "bomb", "weapon", "how to make a", "self-harm", "suicide",
+                                  "spam campaign", "bomb", "weapon", "self-harm", "suicide",
                                   "hate speech", "harassment message", "doxx", "deepfake", "disinformation",
                                   "propaganda", "extortion note", "blackmail"],
     # --- Mass / bulk action over many records ---

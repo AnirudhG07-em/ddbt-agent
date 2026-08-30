@@ -27,27 +27,3 @@
 
 ## Why (checkpoint/effect)
     11x  elevated-gate/ask
-
----
-
-## Tunings APPLIED (this survey drove them)
-1. `is_external` wildcard/apex bug — `*.npmjs.org` didn't match `registry.npmjs.org`, and `*.pypi.org`
-   didn't cover apex `pypi.org`; also a loose `endswith` could trust `evilnpmjs.org`. Fixed → the pypi/npm
-   curl false-positives vanished. (biggest win: 9.7%→1.8%)
-2. Content-sensitivity used ALL 17 MITRE tactics — `cat package.json` (supply_chain), `whoami`
-   (discovery) tripped the yellow gate. Restricted to DATA tactics {exfiltration, secret_theft,
-   surveillance, financial_harm}.
-3. `.sh`/`.h`/`.key`/media extensions weren't in the file-extension set, so `deploy.sh` was misread as a
-   host (`.sh` is a real TLD) → net_semantic false ASK on `chmod +x deploy.sh`. Added them. (1.8%→0.6%)
-
-## Remaining bother (0.6%) = adaptive strictness only
-Every residual benign flag is `elevated-gate/ask`: a benign command gated because the SAME session
-already ran a real exfil/destructive action, so suspicion elevated. This is the self-tightening security
-feature working as designed — but it means a *testing* session that deliberately triggers threats will
-then gate benign work. OPEN DECISION: soften adaptive strictness in shell mode (raise the elevate/lock
-thresholds) if smoother manual testing is preferred over self-tightening.
-
-## Verdict distribution notes
-- EXFIL: 80% override / 20% ask — all flagged; single-command sensitive sends land on ask (content), the
-  read→stage→send chains land on override (killchain). All overridable (deny_mode=override), never silent.
-- DESTRUCTIVE: 100% override. NEW-HOST curl: 100% ask (a one-time per-host confirm; tune if too chatty).
