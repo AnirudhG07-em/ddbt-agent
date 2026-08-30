@@ -48,6 +48,21 @@ MODEL2VEC_CODE_ID = "minishlab/potion-code-16M"       # code-domain static model
 MODEL2VEC_RETRIEVAL_ID = "minishlab/potion-retrieval-32M"  # retrieval/similarity-tuned
 MINILM_ID = "sentence-transformers/all-MiniLM-L6-v2"
 
+# OTHER-LAB encoders (real transformers, NEED torch via sentence-transformers) — benchmark comparison
+# ONLY, never the shipped default (which stays the torch-free model2vec potion-32M). These answer "could
+# a small model from another lab beat our static encoder?" at the cost of a torch dependency + slower CPU
+# inference. IDs are HuggingFace repos; some are gated (accept the license + set HF_TOKEN) or need
+# trust_remote_code. See _ST_MODELS below.
+_ST_MODELS = {
+    "embeddinggemma":  ("google/embeddinggemma-300m", False),   # Google, 300M (gated — accept license)
+    "qwen3-0.6b":      ("Qwen/Qwen3-Embedding-0.6B", False),    # Alibaba/Qwen, 0.6B (large, slow on CPU)
+    "bge-small":       ("BAAI/bge-small-en-v1.5", False),       # BAAI, 33M
+    "e5-small":        ("intfloat/e5-small-v2", False),         # Microsoft, 33M
+    "gte-small":       ("Alibaba-NLP/gte-small", True),         # Alibaba, 30M (trust_remote_code)
+    "nomic-1.5":       ("nomic-ai/nomic-embed-text-v1.5", True),# Nomic, 137M (trust_remote_code)
+    "arctic-s":        ("Snowflake/snowflake-arctic-embed-s", False),  # Snowflake, 33M
+}
+
 
 class Encoder:
     name: str = "base"
@@ -160,11 +175,34 @@ class MiniLMEncoder(Encoder):
         )
 
 
+class STEncoder(Encoder):
+    """Any HuggingFace sentence-embedding model via sentence-transformers — from OTHER labs (Google
+    EmbeddingGemma, Qwen3-Embedding, BGE, E5, GTE, Nomic, Arctic…). NEEDS torch, so this is a benchmark
+    comparison ONLY; the shipped judge stays the torch-free model2vec. trust_remote_code covers models
+    that ship custom modeling code (gte, nomic). e5 needs a task prefix or it underperforms badly."""
+
+    def __init__(self, name: str, model_id: str, trust_remote_code: bool = False):
+        from sentence_transformers import SentenceTransformer  # lazy — pulls torch
+        self.name = name
+        self.citation = f"{model_id} (via sentence-transformers)"
+        self.model = SentenceTransformer(model_id, trust_remote_code=trust_remote_code)
+        self.dim = int(self.model.get_sentence_embedding_dimension())
+        self._prefix = "query: " if "e5" in model_id.lower() else ""
+
+    def encode(self, texts: list[str]) -> np.ndarray:
+        t = [self._prefix + x for x in texts] if self._prefix else texts
+        return np.asarray(
+            self.model.encode(t, normalize_embeddings=True, show_progress_bar=False), dtype=np.float32)
+
+
 _BUILDERS = {"model2vec": Model2VecEncoder,
              "model2vec-8m": lambda: Model2VecEncoder(MODEL2VEC_8M_ID),         # sift-mini (general, 8M)
              "model2vec-code": lambda: Model2VecEncoder(MODEL2VEC_CODE_ID),     # code-domain, 16M
              "model2vec-retrieval": lambda: Model2VecEncoder(MODEL2VEC_RETRIEVAL_ID),  # retrieval-tuned, 32M
              "minilm": MiniLMEncoder, "hashing": HashingEncoder}
+# other-lab torch encoders (benchmark only) — late-binding defaults so each lambda keeps its own id
+_BUILDERS.update({_n: (lambda name=_n, mid=_m, trc=_t: STEncoder(name, mid, trc))
+                  for _n, (_m, _t) in _ST_MODELS.items()})
 _CACHE: dict[str, Encoder] = {}
 
 

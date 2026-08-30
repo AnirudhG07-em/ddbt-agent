@@ -104,8 +104,8 @@ def _load_training_records():
 
 def main(argv=None):
     ap = argparse.ArgumentParser()
-    ap.add_argument("--encoder", default="model2vec",
-                    choices=["model2vec", "model2vec-8m", "model2vec-code", "model2vec-retrieval", "minilm", "hashing"])
+    from sift.features import embed as _embed  # registry is the single source of encoder names
+    ap.add_argument("--encoder", default="model2vec", choices=sorted(_embed._BUILDERS))
     ap.add_argument("--out", default=str(Path(__file__).resolve().parent / "models" / "sift_judge.joblib"))
     ap.add_argument("--target-fpr", type=float, default=0.05)
     args = ap.parse_args(argv)
