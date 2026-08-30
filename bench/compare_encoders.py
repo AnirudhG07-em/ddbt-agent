@@ -11,9 +11,8 @@ Candidates (all Model2Vec / potion — the torch-free static class; see notes at
     retrieval-32M  minishlab/potion-retrieval-32M  (retrieval/similarity-tuned)
 
 Usage:
-    uv run python bench/compare_encoders.py                 # limit 200/dataset (fast survey)
-    uv run python bench/compare_encoders.py --full          # full datasets (slower, publishable)
-    uv run python bench/compare_encoders.py --limit 500
+    uv run python bench/compare_encoders.py                 # FULL datasets (default)
+    uv run python bench/compare_encoders.py --limit 200     # cap 200/dataset (fast survey)
     uv run python bench/compare_encoders.py --only 32M,code-16M
     uv run python bench/compare_encoders.py --retrain       # force retrain even if artifacts exist
 
@@ -102,7 +101,7 @@ def benchmark(artifact: pathlib.Path, limit: int) -> dict:
         cases = loader()
         if not cases:
             continue
-        m = run._replay(cases, judge, None, limit=limit)
+        m = run._replay(cases, judge, None, limit=limit, label=name)
         out[name] = {"stopped": round(m["stopped"] / m["attacks"], 3) if m["attacks"] else None,
                      "clean": round(m["clean"] / m["benign"], 3) if m["benign"] else None,
                      "attacks": m["attacks"], "benign": m["benign"]}
@@ -111,12 +110,12 @@ def benchmark(artifact: pathlib.Path, limit: int) -> dict:
 
 def main(argv=None):
     ap = argparse.ArgumentParser()
-    ap.add_argument("--limit", type=int, default=200)
-    ap.add_argument("--full", action="store_true", help="no per-dataset limit")
+    ap.add_argument("--limit", type=int, default=0, help="cap cases per dataset; 0 = full (default)")
+    ap.add_argument("--full", action="store_true", help="(default) full datasets — kept for compatibility")
     ap.add_argument("--retrain", action="store_true")
     ap.add_argument("--only", default="", help="comma list of labels, e.g. 32M,code-16M")
     args = ap.parse_args(argv)
-    limit = None if args.full else args.limit
+    limit = None if args.limit in (0, None) else args.limit
 
     labels = [x.strip() for x in args.only.split(",") if x.strip()] or list(CANDIDATES)
     results: dict = {}

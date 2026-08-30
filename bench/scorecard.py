@@ -58,7 +58,7 @@ def _rjudge(judge, limit):
 
 def main(argv=None):
     args = argv if argv is not None else sys.argv[1:]
-    limit = 200
+    limit = None  # full datasets by default; pass --limit N to cap per dataset
     if "--limit" in args:
         i = args.index("--limit"); limit = int(args[i + 1])
 
@@ -85,7 +85,7 @@ def main(argv=None):
         if not cases:
             print(f"  {name:20s} SKIPPED (no cases)"); continue
         t0 = time.time()
-        m = run._replay(cases, judge, None, limit=limit)
+        m = run._replay(cases, judge, None, limit=limit, label=name)
         sp = (m["stopped"] / m["attacks"]) if m["attacks"] else float("nan")
         cl = (m["clean"] / m["benign"]) if m["benign"] else float("nan")
         report["results"][name] = {"attacks": m["attacks"], "stopped": round(sp, 3),

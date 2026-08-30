@@ -43,6 +43,25 @@ def _luhn_ok(num: str) -> bool:
     return s % 10 == 0
 
 
+# Presidio's AnalyzerEngine is a stateless, read-only detector, but constructing one spins up a spaCy
+# NLP pipeline (~3s cold). It's identical across every plugin instance, so build it ONCE and share it —
+# otherwise a benchmark that makes a fresh plugin per case pays that ~1.3s over and over (the dominant
+# cost in replays: ~20+ min on InjecAgent alone, not the ~1ms inference). Sentinel distinguishes
+# "not built yet" from "built, but presidio unavailable → None".
+_ANALYZER_SENTINEL = object()
+_ANALYZER = _ANALYZER_SENTINEL
+
+
+def _shared_analyzer():
+    global _ANALYZER
+    if _ANALYZER is _ANALYZER_SENTINEL:
+        try:
+            from presidio_analyzer import AnalyzerEngine
+            from presidio_analyzer.nlp_engine import NlpEngineProvider  # noqa: F401
+            _ANALYZER = AnalyzerEngine()
+        except Exception:
+            _ANALYZER = None
+    return _ANALYZER
 
 
 class PiiDlp(Plugin):
@@ -58,13 +77,7 @@ class PiiDlp(Plugin):
         self._anonymizer = self._try_anonymizer()
 
     def _try_presidio(self):
-        try:
-            from presidio_analyzer import AnalyzerEngine
-            from presidio_analyzer.nlp_engine import NlpEngineProvider  # noqa: F401
-            # pattern-only: no NER model, keep it light
-            return AnalyzerEngine()
-        except Exception:
-            return None
+        return _shared_analyzer()
 
     def _detect(self, text: str) -> list[str]:
         hits: list[str] = []

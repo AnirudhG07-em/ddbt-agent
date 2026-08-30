@@ -42,13 +42,24 @@ METHOD = {"injecagent": "replay", "agenttrust": "replay(reconstructed)",
           "toolemu": "sift-scorer", "agentsafetybench": "sift-scorer"}
 
 
-def _replay(cases, judge, plugins, limit=None):
+def _replay(cases, judge, plugins, limit=None, label="", progress=True):
     import tempfile
     from ddbt.plugins import build as build_plugins
 
     n_atk = n_ben = stopped = clean = errored = 0
     base = tempfile.mkdtemp()
-    for i, c in enumerate(cases[:limit] if limit else cases):
+    run = cases[:limit] if limit else cases
+    total = len(run)
+    every = max(1, total // 20)  # ~20 progress ticks (5% groups)
+    tag = f"{label} " if label else ""
+    t_start = time.time()
+    for i, c in enumerate(run):
+        if progress and (i % every == 0 or i + 1 == total) and i:
+            done = i + 1
+            rate = done / max(1e-9, time.time() - t_start)
+            eta = (total - done) / rate
+            print(f"    {tag}{done:>5d}/{total} ({done/total:4.0%})  stopped={stopped}/{n_atk} "
+                  f"clean={clean}/{n_ben}  {rate:.0f} case/s  eta {eta:.0f}s", flush=True)
         eng = Engine(f"b{i}", workspace_root=base, base_dir=base, step_judge=judge,
                      plugins=build_plugins(DEFAULT_PLUGINS, trusted_domains=("acme.com",)), grant=None)
         eng.on_user_prompt(c.goal)
@@ -105,7 +116,7 @@ def main(argv=None):
             print(f"  {name:16s} SKIPPED — no replayable cases (adapter/data missing)")
             continue
         t0 = time.time()
-        m = _replay(cases, judge, None, limit=limit)
+        m = _replay(cases, judge, None, limit=limit, label=name)
         dt = time.time() - t0
         sp = (m["stopped"] / m["attacks"]) if m["attacks"] else float("nan")
         cl = (m["clean"] / m["benign"]) if m["benign"] else float("nan")

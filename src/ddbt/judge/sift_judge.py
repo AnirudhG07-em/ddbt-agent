@@ -81,6 +81,10 @@ class SiftJudge:
             from sift.serve import SiftScorer
 
             from ddbt.core import config as _cfg
+            # DDBT_SIFT_MODEL lets you pin a specific artifact (e.g. an encoder variant) without editing
+            # config — used by the encoder sweep in bench/embash_sim. Explicit arg still wins.
+            import os as _os
+            artifact_path = artifact_path or _os.environ.get("DDBT_SIFT_MODEL") or None
             scorer = SiftScorer(artifact_path) if artifact_path else SiftScorer.find()
             if not scorer:
                 return None
