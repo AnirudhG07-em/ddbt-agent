@@ -12,6 +12,16 @@ the calibrated risk, the deterministic structural flags, and the reason (incl. a
 
 from __future__ import annotations
 
+# SINGLE-ROW INFERENCE SPEEDUP: sift scores one action at a time, but scikit's HistGradientBoosting links
+# OpenMP (libomp) and spins a thread pool per predict — on a single row the coordination costs ~30x the
+# compute (measured: ~90 ms → ~3 ms per predict). libomp reads these at init, so they MUST be set before
+# numpy/sklearn import. setdefault → never override an operator's explicit choice. Batch TRAINING is a
+# separate process (it can re-export these) and is unaffected.
+import os as _os
+
+for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+    _os.environ.setdefault(_v, "1")
+
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -131,9 +141,28 @@ class SiftScore:
     matched_behavior: str | None = None
 
 
+_THREAD_CTL = None
+
+
+def _limit_inference_threads() -> None:
+    """sift does SINGLE-ROW inference; scikit/OpenMP spins up a thread pool per predict, and on one row
+    the coordination costs ~30x the compute (measured: ~90 ms → ~3 ms). Pin BLAS/OpenMP to one thread,
+    once — pure win for the runtime path (daemon, Guard, per-case benchmark replay). Batch TRAINING runs
+    in a separate process and is unaffected. Best-effort: no threadpoolctl → just run at default speed."""
+    global _THREAD_CTL
+    if _THREAD_CTL is not None:
+        return
+    try:
+        import threadpoolctl
+        _THREAD_CTL = threadpoolctl.threadpool_limits(limits=1)   # kept alive on the module → persistent
+    except Exception:
+        _THREAD_CTL = False
+
+
 class SiftScorer:
     def __init__(self, artifact_path: str | Path):
         import joblib
+        _limit_inference_threads()       # single-row predicts: threads only add ~30x OpenMP overhead
         a = joblib.load(artifact_path)
         self.encoder = a["encoder"]
         self.model = a["model"]          # fitted Fusion (its .clf is present; ._enc reloads)

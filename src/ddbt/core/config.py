@@ -269,9 +269,9 @@ def _load_raw(cwd_key: str | None) -> str:
     return json.dumps(merged)
 
 
-# shell-sandbox secret DIRS → dir/* ; and denyWrite ext/name patterns → recursive globs
+# shell-sandbox secret DIRS → dir/* for the ddbt file-deny floor; denyWrite name/ext patterns → globs.
 _SB_DIRS = {"~/.ssh", "~/.aws", "~/.gnupg", "~/.config/gcloud"}
-_SB_WRITE = {".env": "**/.env*", ".env.": "**/.env*", ".pem": "**/*.pem", "*.key": "**/*.key"}
+_SB_WRITE = {".env": "**/.env*", ".env.*": "**/.env*", "*.pem": "**/*.pem", "*.key": "**/*.key"}
 
 
 def _sandbox_path(raw: str, cwd: str | None) -> Path | None:
@@ -285,10 +285,15 @@ def _sandbox_path(raw: str, cwd: str | None) -> Path | None:
 
 
 def _apply_sandbox(merged: dict, cwd: str | None) -> None:
-    """UNION an external shell-sandbox settings file (em-bash-style) into the policy: allowedDomains →
-    web.allow (trusted), deniedDomains → web.deny, secret denyRead/denyWrite → files.deny. Deny is
-    additive; the sandbox's write-allow is intentionally ignored (ddbt guards data-flow, not write path).
-    Never fails a load — a missing/broken sandbox file just leaves the policy unchanged."""
+    """UNION an external shell-sandbox settings file (em-bash-style) into the policy:
+      • network.allowedDomains → web.allow (trusted hosts — so a curl to github/npm/pypi isn't flagged),
+      • network.deniedDomains  → web.deny,
+      • filesystem.denyRead/denyWrite → files.deny (the secret file floor).
+    The file-deny floor is enforced by the grant, but a READ of one of these (cat .env / read a key) is
+    NOT a hard block: the engine's sensitive-read fast-path turns it into a redactable ASK (redact the
+    output / show raw / cancel) when sensitive_read='ask'. An EGRESS of the same file (curl -d @.env …)
+    is not a read, so it stays a DENY. Deny is additive; the sandbox's write-allow is ignored (ddbt
+    guards data-flow, not the write path); never fails a load — a missing/broken file leaves policy as-is."""
     p = _sandbox_path(merged.get("sandbox_config"), cwd)
     if p is None:
         return
@@ -312,7 +317,9 @@ def _apply_sandbox(merged: dict, cwd: str | None) -> None:
                 cur.append(v)
         sec[key] = cur
 
-    _union("web", "allow", sorted({str(d).lstrip(".").lower() for d in net.get("allowedDomains", [])}))
+    # allowedDomains → web.TRUSTED (known-good, lowers exfil suspicion) — NOT web.allow, which the grant
+    # would read as a restrictive allow-list and then deny every other host (wrong for a general shell).
+    _union("web", "trusted", sorted({str(d).lstrip(".").lower() for d in net.get("allowedDomains", [])}))
     _union("web", "deny", sorted({str(d).lstrip(".").lower() for d in net.get("deniedDomains", [])}))
     deny = []
     for r in fs.get("denyRead", []):

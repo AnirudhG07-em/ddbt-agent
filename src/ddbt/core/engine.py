@@ -335,6 +335,8 @@ class Engine:
                 aid = self.audit.decision(checkpoint="sensitive-read", state=eff.value, tool=tool_name,
                                           summary=_summarize(tool_name, tool_input), reason=reason)
                 return Decision(eff, eff.value, "sensitive-read", reason, redactable=True,
+                                # a READ of a secret is a yellow heads-up (local, redactable); RED is
+                                # reserved for sending it out or destroying data.
                                 risk=chromatics.classify(eff.value, "grant-fastpath", True, False, False, who),
                                 audit_id=aid)
             if gcheck.effect == "deny":
@@ -452,6 +454,11 @@ class Engine:
                 effect, checkpoint = Effect.ASK, "session-trajectory"
                 reason = "is part of a sequence of steps that together look unsafe"
 
+        # SAFETY: a gated action must never show the "clean" placeholder (e.g. an elevated-session gate on
+        # an action the judge itself found benign) — give it an honest, generic finding instead.
+        if effect is not Effect.ALLOW and (not reason or reason.strip().lower() == "clean"):
+            reason = "was flagged for a manual check"
+
         if not verdict.error:
             # this step's evidence tightens FUTURE steps; a downgraded block still counts as "blocked"
             self._bump_suspicion(verdict, blocked=effect in (Effect.DENY, Effect.ASK_OVERRIDE))
@@ -478,7 +485,8 @@ class Engine:
             relevant=verdict.serves_goal, harmful=verdict.harmful, stray=verdict.deviation,
             error=verdict.error,
             risk=chromatics.classify(chroma, checkpoint, verdict.serves_goal,
-                                     verdict.harmful, verdict.deviation, who),
+                                     verdict.harmful, verdict.deviation, who,
+                                     high_impact=verdict.high_impact),
             audit_id=aid,
         )
 
@@ -545,7 +553,9 @@ class Engine:
             return Effect.ALLOW, "judge"
         # NORMAL
         if verdict.high_impact:
-            return Effect.ASK, "gate"  # on-goal but high-impact → ask a human
+            return Effect.ASK, "gate"  # on-goal but high-impact (exfil/destruction) → ask a human (red)
+        if self.ddbt and verdict.accesses_secrets:
+            return Effect.ASK, "sensitive-content"  # touched a secret locally → a lighter heads-up (yellow)
         return Effect.ALLOW, "judge"
 
     # ---- adaptive session suspicion (progressive enforcement) ----

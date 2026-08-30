@@ -64,7 +64,10 @@ _FILE_EXTS = frozenset(
     "less py pyc rb go rs java kt c cc cpp cxx hpp cs php pl lua sql bash zsh ps1 bat cmd png jpg jpeg gif "
     "bmp svg ico webp pdf doc docx xls xlsx ppt pptx zip gz tgz tar bz2 xz rar bin exe dll dylib so class "
     "jar war env pem crt cert pub dat db sqlite bak tmp swp map min mod sum gradle properties dockerfile "
-    "gitignore npmrc wasm tf tfvars ipynb parquet avro proto".split())
+    "gitignore npmrc wasm tf tfvars ipynb parquet avro proto "
+    # shell scripts + a few gaps — some of these extensions are ALSO real TLDs (.sh), so without them
+    # `chmod +x deploy.sh` misreads `deploy.sh` as an external host. Local files, never network hosts.
+    "sh fish key h hh hxx mov mp4 mp3 wav flac out node lib obj".split())
 
 
 def flatten(obj) -> str:
@@ -116,9 +119,16 @@ def destinations(text: str) -> list[str]:
 
 
 def is_external(dest: str, trusted: tuple[str, ...]) -> bool:
-    """A destination is external unless it is (or is under) a trusted domain."""
-    dest = dest.lower()
-    return not any(dest == t or dest.endswith("." + t) or dest.endswith(t) for t in trusted)
+    """A destination is external unless it is (or is under) a trusted domain. A trusted pattern `*.x.y`
+    covers the apex `x.y` AND any subdomain; a bare `x.y` covers `x.y` and its subdomains. Matching is on
+    label boundaries only — `npmjs.org` never trusts `evilnpmjs.org`."""
+    dest = dest.lower().rstrip(".")
+    for t in trusted:
+        t = t.lower().rstrip(".")
+        base = t[2:] if t.startswith("*.") else t     # *.npmjs.org → npmjs.org (apex + subdomains)
+        if base and (dest == base or dest.endswith("." + base)):
+            return False
+    return True
 
 
 # Minimal multi-label public suffixes so eTLD+1 is correct on the common shared platforms (a full PSL

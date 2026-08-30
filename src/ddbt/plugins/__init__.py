@@ -96,8 +96,13 @@ def from_config(cwd=None) -> PluginManager:
 
     spec = config.plugins(cwd)
     policy = config.grant_spec(cwd) or {}
+    web = policy.get("web", {}) or {}
+    # trusted destinations for the plugins' "external?" checks. `web.allow` = the grant's host ALLOW-LIST
+    # (restrictive: non-listed hosts are denied) and is also trusted. `web.trusted` = trusted-ONLY (the
+    # shell-sandbox union writes allowedDomains here): these lower exfil suspicion but do NOT restrict
+    # other hosts, so a general shell can still curl anywhere while github/npm/pypi stay known-good.
     trusted = tuple((policy.get("email", {}) or {}).get("allow", [])) + \
-        tuple((policy.get("web", {}) or {}).get("allow", []))
+        tuple(web.get("allow", [])) + tuple(web.get("trusted", []))
     # inject the top-level ddbt.json "trajectory_rules" into policy_rules (a clean key, not nested
     # under plugins) so the P5 DSL reads like the rest of the declarative config.
     rules = config.trajectory_rules(cwd)

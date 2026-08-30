@@ -233,6 +233,117 @@ def _cmd_screen(args: argparse.Namespace) -> int:
     return 2 if s.sensitive else 0
 
 
+def _cmd_serve(args: argparse.Namespace) -> int:
+    """Persistent guard DAEMON — the integration surface for a long-running host (e.g. a shell).
+
+    `ddbt check` reloads the ~130 MB model on every call; a live shell can't pay that per command. This
+    keeps ONE process alive with the model warm and answers newline-delimited JSON requests on stdin,
+    one JSON response per line on stdout (a request may not span lines; a response never does):
+
+        →  {"id":1,"op":"check","session_id":"s","cwd":"/repo","tool":"bash","args":{"command":"curl …"}}
+        ←  {"id":1,"effect":"deny","reason":"…","risk":"high", …Decision.to_dict()…}
+
+    ops:  check {tool,args,goal?}          → a Decision dict (effect: allow|ask|deny|ask_override)
+          record {tool,args,result}        → {"ok":true}      (feeds the cross-step trajectory/killchain)
+          goal {goal}                      → {"note":…}       (set the trusted task for the session)
+          screen {text}                    → {"sensitive","redacted","findings","effect","reason"}
+          risk {}                          → {"suspicion","strictness","level"}
+          close {}                         → {"ok":true}       (drop one session's in-memory guard)
+          ping {}                          → {"pong":true}
+
+    Every request carries session_id + cwd. Guards are cached per (session_id, cwd); the per-cwd judge
+    is cached too and shares the process-global encoder, so only the FIRST request pays the load. A bad
+    or failing request returns {"error":…} and never kills the daemon (fail-open at the transport layer;
+    the host decides how to treat an error — a shell should treat it as ASK). Line-buffered + flushed so
+    the host gets each answer immediately."""
+    import json
+
+    from ddbt import Guard, screen_text
+
+    guards: dict[tuple, Guard] = {}
+    judges: dict[str, object] = {}
+
+    def _judge(cwd: str):
+        if cwd not in judges:
+            from ddbt.judge.provider import make_step_judge
+            judges[cwd] = make_step_judge(cwd=cwd)     # reuses the process-global encoder → cheap after 1st
+        return judges[cwd]
+
+    def _guard(req: dict) -> Guard:
+        sid, cwd = req.get("session_id", "default"), req.get("cwd") or "."
+        key = (sid, cwd)
+        if key not in guards:
+            # shell posture: follow the user off-script (goal_shift=allow); config still overrides.
+            guards[key] = Guard(sid, cwd=cwd, judge=_judge(cwd), shell=True)
+        return guards[key]
+
+    # the same rich, user-facing line the Claude Code hook shows: the common ddbt preamble + the
+    # finding + a risk swatch. Exported as `display` so any host can render it verbatim (no re-formatting).
+    _swatch = {"none": "🟢", "low": "🟢", "med": "🟡", "high": "🔴"}
+
+    def _display(d) -> str:
+        from ddbt.plugins.base import finding_message, wrap_message
+        body = d.reason if (d.checkpoint or "").startswith("plugin:") else finding_message("", d.reason)
+        return f"🛡 {wrap_message(body)} · {_swatch.get(d.risk, '')}risk:{d.risk}"
+
+    def _handle(req: dict) -> dict:
+        op = req.get("op")
+        if op == "check":
+            g = _guard(req)
+            if req.get("goal"):
+                g.goal(req["goal"])
+            d = g.check(req.get("tool", ""), req.get("args") or {})
+            out = d.to_dict()
+            out["display"] = _display(d)   # rich, ready-to-show warning text
+            return out
+        if op == "record":
+            _guard(req).record(req.get("tool", ""), req.get("args") or {}, req.get("result"))
+            return {"ok": True}
+        if op == "goal":
+            return {"note": _guard(req).goal(req.get("goal", ""))}
+        if op == "screen":
+            s = screen_text(req.get("text", ""))
+            return {"sensitive": s.sensitive, "redacted": s.redacted,
+                    "findings": s.findings, "effect": s.effect, "reason": s.reason}
+        if op == "risk":
+            return _guard(req).risk()
+        if op == "close":
+            g = guards.pop((req.get("session_id", "default"), req.get("cwd") or "."), None)
+            if g is not None:
+                g.close()
+            return {"ok": True}
+        if op == "ping":
+            return {"pong": True}
+        return {"error": f"unknown op {op!r}"}
+
+    # PROTOCOL HYGIENE: stdout carries ONLY response JSON. Redirect sys.stdout to stderr so any stray
+    # print() — from a library warming up, a model download bar, a deprecation notice — lands on stderr
+    # and can never corrupt the JSON-lines stream (a single bad line would desync the host's reader).
+    out = sys.stdout
+    sys.stdout = sys.stderr
+    for line in sys.stdin:                       # blocks until the host writes a line or closes the pipe
+        line = line.strip()
+        if not line:
+            continue
+        rid = None
+        try:
+            req = json.loads(line)
+            rid = req.get("id")
+            resp = _handle(req)
+        except Exception as exc:                 # noqa: BLE001 — one bad request must never kill the daemon
+            resp = {"error": f"{type(exc).__name__}: {exc}"}
+        if rid is not None:
+            resp = {"id": rid, **resp}
+        out.write(json.dumps(resp) + "\n")
+        out.flush()
+    for g in guards.values():                    # stdin closed → host is gone; flush session state to disk
+        try:
+            g.close()
+        except Exception:  # noqa: BLE001
+            pass
+    return 0
+
+
 def _sift_model_path():
     """Path to the trained sift artifact if it exists, else None (the 'general layer')."""
     import pathlib
@@ -422,6 +533,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("check", help="judge a tool call: stdin JSON {session_id,cwd,tool,args,goal?} → Decision JSON; exit 0/1/2 = allow/deny/ask").set_defaults(fn=_cmd_check)
     sub.add_parser("record", help="record a completed step: stdin JSON {session_id,cwd,tool,args,result}").set_defaults(fn=_cmd_record)
     sub.add_parser("screen", help="redact secrets/PII from stdin text → JSON {sensitive,redacted,findings}; exit 2 if sensitive").set_defaults(fn=_cmd_screen)
+    sub.add_parser("serve", help="persistent guard daemon: newline-JSON requests on stdin → responses on stdout (model stays warm; for a live shell)").set_defaults(fn=_cmd_serve)
 
     prep = sub.add_parser("prepare", help="train the non-LLM sift judge model (one-time)")
     prep.add_argument("--encoder", default="model2vec", choices=["model2vec", "minilm", "hashing"])

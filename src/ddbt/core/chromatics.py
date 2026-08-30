@@ -37,12 +37,14 @@ class Chroma:
 
 
 def classify(effect: str, checkpoint: str, relevant: bool, harmful: bool,
-             stray: bool, who: str) -> str:
-    """The four-band rule. Discrete, code-decided — no scale to guess."""
+             stray: bool, who: str, high_impact: bool = False) -> str:
+    """The four-band rule. Discrete, code-decided — no scale to guess. A high-IMPACT ASK (sensitive
+    data leaving, a destructive-but-confirmable op) is red, not amber — so `curl passport.png` reads as
+    high while a benign new-host `curl apple.png` stays med."""
     if effect == "deny" or harmful or stray:
         return "high"
     if effect == "ask":
-        return "med"
+        return "high" if high_impact else "med"
     if who in ("stranger", "unknown") or not relevant:
         return "low"
     return "none"

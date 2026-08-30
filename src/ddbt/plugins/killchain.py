@@ -30,35 +30,56 @@ from ddbt.plugins.base import Plugin, PluginContext, PreVerdict
 
 _KEY = "killchain_stages"
 
-# Coarse tactic detectors (progression signal, deliberately broader than mitre_guard's exact rules).
-_TACTIC = [
-    ("credential_access", re.compile(r"\.env\b|id_rsa|/\.ssh/|/\.aws/|credential|\bsecret\b|\.pem\b|"
-                                     r"private[_-]?key|/etc/shadow|password|\btoken\b|api[_-]?key|mimikatz|lazagne", re.I)),
-    ("collection", re.compile(r"screencapture|/dev/video|/dev/audio|keylog|pynput|mailbox|saved.?address|"
-                              r"\bdump\b|select\s+\*|find\s+.*-name|tar\s+-c|zip\s+-r", re.I)),
-    ("discovery", re.compile(r"\b(whoami|uname|printenv|netstat|ifconfig|ipconfig|ps\s+aux|"
-                             r"ls\s+-R|find\s+/|history)\b", re.I)),
-    ("defense_evasion", re.compile(r"base64|b64encode|gzip|xxd|openssl\s+enc|iptables\s+-F|ufw\s+disable|"
-                                   r"history\s+-c|rm\s+.*/var/log|chattr|setenforce\s+0", re.I)),
-    ("command_and_control", re.compile(r"/dev/tcp/|nc\s+.*-e|ncat\s+.*-e|bash\s+-i|ngrok|reverse\s*shell", re.I)),
-    ("persistence", re.compile(r"authorized_keys|crontab\s+-|/etc/cron|systemctl\s+enable|launchd|"
-                               r"LaunchDaemons|schtasks\s+/create|New-Service", re.I)),
-    ("impact", re.compile(r"rm\s+-[a-z]*[rf]|mkfs\.|dd\s+.*of=/dev/|\bshred\b|:\(\)\s*\{|encrypt|ransom|"
-                          r"drop\s+database|truncate\s+table|vssadmin\s+delete", re.I)),
-]
-# When a network send fires, we look back over the WHOLE history at FULL VIGOUR — all precursor tactics,
-# not just the strongest — so a staged poison (recon → collect → encode → send) is caught, not only the
-# obvious secret→send. Credential-access is the strongest signal (a secret leaving is unambiguous exfil);
-# the rest corroborate a progression.
-_CRED = {"credential_access"}                        # read a secret/key — a send after this IS exfil
-_PRECURSOR = {"credential_access", "collection", "discovery", "defense_evasion"}  # any staging/recon step
+# A step "touches sensitive data" when it reads a secret/credential or stages data for collection.
+_SENS = re.compile(r"\.env\b|\.env\.|id_rsa|/\.ssh/|/\.aws/|/\.gnupg/|credential|\bsecret\b|\.pem\b|\.key\b|"
+                   r"private[_-]?key|/etc/shadow|password|\btoken\b|api[_-]?key|mimikatz|lazagne|"
+                   r"\bdump\b|select\s+\*|\btar\s+-c|\bzip\s+-r|screencapture|keylog|mailbox", re.I)
 
 
-def _stages(tool: str, text: str, external_egress: bool) -> set[str]:
-    s = {name for name, pat in _TACTIC if pat.search(text)}
-    if external_egress:
-        s.add("exfiltration")
-    return s
+def _basename(tok: str) -> str:
+    return tok.rsplit("/", 1)[-1].strip("'\"")
+
+
+def _file_refs(text: str) -> set[str]:
+    """Files this command READS/SENDS (by basename): curl `@file` bodies, `-T`/`-o` targets, and scp/rsync
+    source paths. Basenames make the match robust to differing paths for the same file."""
+    refs: set[str] = set()
+    for m in re.finditer(r"@([^\s'\";|>&]+)", text):                       # curl -d @f, -F x=@f, --data-binary @f
+        refs.add(_basename(m.group(1)))
+    for m in re.finditer(r"(?:-T|--upload-file|-o|--output)\s+@?([^\s'\";|>&]+)", text):
+        refs.add(_basename(m.group(1)))
+    if re.search(r"\b(scp|rsync|sftp)\b", text):                            # source file(s), skip host:path dests/flags
+        for tok in re.split(r"[\s'\"|;]+", text)[1:]:
+            if ":" in tok or tok.startswith("-"):
+                continue
+            if "/" in tok or re.search(r"\.[A-Za-z0-9]{1,6}$", _basename(tok)):
+                refs.add(_basename(tok))
+    return {r for r in refs if r and r not in (".", "..")}
+
+
+def _all_files(text: str) -> set[str]:
+    """Every file-ish token in a command (by basename) — used by observe to taint the sensitive files a
+    step READS (e.g. `cat .env` → `.env`), which the send-oriented `_file_refs` doesn't capture."""
+    files: set[str] = set()
+    for tok in re.split(r"[\s'\"|;>&=]+", text):
+        tok = tok.lstrip("@")
+        if not tok or tok.startswith("-"):
+            continue
+        base = _basename(tok)
+        if ("/" in tok or re.search(r"\.[A-Za-z0-9]{1,6}$", base)) and base not in (".", ".."):
+            files.add(base)
+    return files
+
+
+def _outputs(text: str) -> set[str]:
+    """Artifacts this command WRITES (by basename): shell redirects and `-o`/`tee` targets. These inherit
+    taint when the command touched sensitive data (e.g. `base64 .env > /tmp/b` taints `b`)."""
+    outs: set[str] = set()
+    for m in re.finditer(r">>?\s*([^\s'\";|&]+)", text):
+        outs.add(_basename(m.group(1)))
+    for m in re.finditer(r"(?:-o|--output|\btee)\s+([^\s'\";|>&]+)", text):
+        outs.add(_basename(m.group(1)))
+    return {o for o in outs if o and o not in (".", "..")}
 
 
 class KillChain(Plugin):
@@ -86,37 +107,28 @@ class KillChain(Plugin):
         if ctx.store is None:
             return
         text = f"{flatten(args)} {flatten(result)}"
-        new = _stages(tool, text, self._external_egress(tool, flatten(args)))
-        if not new:
-            return
-        seen = self._load(ctx)
-        for st in sorted(new):
-            if st not in seen:
-                seen.append(st)             # keep first-seen order for the chain narrative
-        ctx.store.set_meta(_KEY, json.dumps(seen[-16:]))
+        taint = set(self._load(ctx))
+        # A step is tainted if it touches sensitive data directly, OR reads an already-tainted artifact.
+        if _SENS.search(text) or (_all_files(text) & taint):
+            if _SENS.search(text):
+                taint |= _all_files(text)     # the sensitive files it reads are now tainted (cat .env → .env)
+            taint |= _outputs(text)           # …and anything derived from this step (base64 .env > /tmp/b)
+            ctx.store.set_meta(_KEY, json.dumps(sorted(taint)[-128:]))
 
     def pre_check(self, tool: str, args: dict, ctx: PluginContext) -> PreVerdict | None:
         text = flatten(args)
-        # SCOPE GATE: the slow-exfil look-back runs ONLY at an external network send — the one moment
-        # data can actually leave. Not a network send (or a send to a trusted host) → do nothing at all;
-        # we don't even read the history. Every non-network command is left entirely to the per-step
-        # plugins. This is the whole point: "when a curl happens, only then look at the history."
+        # SCOPE GATE: the slow-exfil check runs ONLY at an external network send — the one moment data can
+        # actually leave. Not a network send (or a send to a trusted host) → do nothing.
         if not self._external_egress(tool, text):
             return None
-        # It IS an external send — now check the WHOLE history at FULL VIGOUR. `_load` holds only stages
-        # from EARLIER steps (observe runs after this pre_check), so it is exactly the prior history.
-        history = self._load(ctx)
-        priors = [s for s in dict.fromkeys(history) if s in _PRECURSOR]
-        if not priors:
-            return None                       # a clean send — nothing suspicious preceded it
-        chain = " → ".join(priors) + " → exfiltration"
-        # A secret was read, OR a fuller staged progression (≥2 precursors) precedes the send → this is
-        # exfiltration. DENY.
-        if any(s in _CRED for s in priors) or len(priors) >= 2:
-            return PreVerdict("deny", f"completes a data-exfiltration sequence · {chain} — sensitive data "
-                              f"was staged earlier this session and this network command sends it to an "
-                              f"external destination", self.name, tactic="exfiltration")
-        # A single softer precursor (e.g. one collection/recon step) before an external send is suspicious
-        # but not conclusive → ASK a human to confirm.
-        return PreVerdict("ask", f"looks like a staged exfiltration · {chain} — a data-staging step "
-                          f"preceded this external send; confirm it's intended", self.name, tactic="exfiltration")
+        # It IS an external send. Fire ONLY if THIS send carries data that was accessed/staged earlier —
+        # i.e. it references a TAINTED artifact. Uploading an unrelated benign file (apple.jpg) after
+        # having read a secret earlier is NOT exfiltration, so it is left alone. `_load` holds taint from
+        # EARLIER steps only (observe runs after this pre_check).
+        leaked = _file_refs(text) & set(self._load(ctx))
+        if not leaked:
+            return None
+        names = ", ".join(sorted(leaked))
+        return PreVerdict("deny", f"completes a data-exfiltration sequence — {names} was read or staged from "
+                          f"sensitive data earlier this session, and this command sends it to an external "
+                          f"destination", self.name, tactic="exfiltration")
