@@ -81,6 +81,35 @@ class HashingEncoder(Encoder):
         return np.vstack([self._one(t) for t in texts]) if texts else np.zeros((0, self.dim), np.float32)
 
 
+_ST_DTYPES = {"F64": np.float64, "F32": np.float32, "F16": np.float16, "BF16": np.float16,
+              "I64": np.int64, "I32": np.int32, "I16": np.int16, "I8": np.int8, "U8": np.uint8}
+
+
+def _load_static_mmap(model_id: str):
+    """Load a Model2Vec StaticModel with the embedding matrix MEMORY-MAPPED, from the local cache only.
+
+    model2vec's from_pretrained (a) re-checks HuggingFace over the network and (b) COPIES the whole
+    embedding matrix into RAM (~0.55 s + ~130 MB resident). This instead resolves the cached files with
+    no network, and np.memmap's the matrix straight out of the safetensors blob — load is ~0 and pages
+    fault in lazily on use, so a warm daemon keeps only its working set resident. Raises on anything
+    unexpected so the caller falls back to from_pretrained."""
+    import json
+    from huggingface_hub import hf_hub_download
+    from model2vec import StaticModel
+    from tokenizers import Tokenizer
+    st = hf_hub_download(model_id, "model.safetensors", local_files_only=True)
+    tok = hf_hub_download(model_id, "tokenizer.json", local_files_only=True)
+    cfg = hf_hub_download(model_id, "config.json", local_files_only=True)
+    with open(st, "rb") as f:
+        n = int.from_bytes(f.read(8), "little")
+        hdr = json.loads(f.read(n))
+    meta = hdr["embeddings"]
+    start, _end = meta["data_offsets"]
+    vectors = np.memmap(st, dtype=_ST_DTYPES[meta["dtype"]], mode="r",
+                        offset=8 + n + start, shape=tuple(meta["shape"]))
+    return StaticModel(vectors=vectors, tokenizer=Tokenizer.from_file(tok), config=json.load(open(cfg)))
+
+
 class Model2VecEncoder(Encoder):
     name = "model2vec"
     citation = "Model2Vec potion-base-32M, MinishLab 2024 (github.com/MinishLab/model2vec)"
@@ -91,8 +120,16 @@ class Model2VecEncoder(Encoder):
         # model2vec/huggingface also print reconstruct/download lines to stdout — swallow them during
         # the one-time load so nothing reaches the terminal (or the hook's stdout).
         with open(os.devnull, "w") as _dn, contextlib.redirect_stdout(_dn), contextlib.redirect_stderr(_dn):
-            from model2vec import StaticModel  # lazy
-            self.model = StaticModel.from_pretrained(model_id)
+            try:
+                self.model = _load_static_mmap(model_id)              # fast: cache-only + mmap'd matrix
+            except Exception:
+                from model2vec import StaticModel  # lazy
+                # fallback (e.g. first run, cache empty). force_download DEFAULTS TO TRUE in model2vec —
+                # that re-fetches from HuggingFace every load — so pin it False to use the cache.
+                try:
+                    self.model = StaticModel.from_pretrained(model_id, force_download=False)
+                except TypeError:
+                    self.model = StaticModel.from_pretrained(model_id)   # older signature
         self.dim = int(self.model.dim)
 
     def encode(self, texts: list[str]) -> np.ndarray:
