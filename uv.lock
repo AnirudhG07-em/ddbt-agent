@@ -1064,7 +1064,6 @@ dependencies = [
     { name = "joblib" },
     { name = "model2vec" },
     { name = "numpy" },
-    { name = "presidio" },
     { name = "pytest" },
     { name = "scikit-learn" },
 ]
@@ -1093,6 +1092,7 @@ mcp = [
 ]
 pii = [
     { name = "presidio-analyzer" },
+    { name = "presidio-anonymizer" },
 ]
 
 [package.dev-dependencies]
@@ -1114,8 +1114,8 @@ requires-dist = [
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.2" },
     { name = "model2vec", specifier = ">=0.3" },
     { name = "numpy", specifier = ">=1.26" },
-    { name = "presidio", specifier = ">=2.2.364" },
     { name = "presidio-analyzer", marker = "extra == 'pii'", specifier = ">=2.2" },
+    { name = "presidio-anonymizer", marker = "extra == 'pii'", specifier = ">=2.2" },
     { name = "pytest", specifier = ">=9.1.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
     { name = "pytest-cov", marker = "extra == 'dev'" },
@@ -3377,19 +3377,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/37/aa/51e5b4109a4cdfae28c3613eeeb10764a3794ebef8de93ffbb109465bea3/preshed-3.0.13-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:670db59a52e1823b5f088c764df474e65b686592d4093adbeef14581c95ee2cb", size = 1959473, upload-time = "2026-03-23T08:57:15.706Z" },
     { url = "https://files.pythonhosted.org/packages/0e/6a/1d966f367a14c703dde629d150d996c1b727d442f620300b21c9ec1a24d1/preshed-3.0.13-cp314-cp314t-win_amd64.whl", hash = "sha256:b03e21b0bf95eb56e23973f32cabb930e94f352228652f81c0955dbd6967d904", size = 146229, upload-time = "2026-03-23T08:57:17.457Z" },
     { url = "https://files.pythonhosted.org/packages/22/80/368139067603e590a000122355f9c8576c8ebed4fb0b8849feaa2698489d/preshed-3.0.13-cp314-cp314t-win_arm64.whl", hash = "sha256:b980f3ea9bb74b7f94464bc3d6eb3c9162b6b79b531febd14c6465c24344d2cc", size = 119339, upload-time = "2026-03-23T08:57:18.882Z" },
-]
-
-[[package]]
-name = "presidio"
-version = "2.2.364"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "presidio-analyzer" },
-    { name = "presidio-anonymizer" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/c0/a1/e4afc95b168e5f787b66097463467e143f298080a92b184ac97630c1c457/presidio-2.2.364.tar.gz", hash = "sha256:867dd1398e72c52fac96fd5fa0848159529ecc8da93bbcc0d5efab2d6f12dca0", size = 1732, upload-time = "2026-07-22T07:54:35.669Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/79/dd/36131e8affca262486c0c38da8bb49e9b98b7a3a372dabdd07be86405d34/presidio-2.2.364-py3-none-any.whl", hash = "sha256:00569bcb525a8bb915354b5c2bf66da4bed937b202056b72c80d5f9dc6652bd2", size = 2127, upload-time = "2026-07-22T07:54:34.589Z" },
 ]
 
 [[package]]

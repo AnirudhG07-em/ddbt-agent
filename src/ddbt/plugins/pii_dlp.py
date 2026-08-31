@@ -52,16 +52,41 @@ _ANALYZER_SENTINEL = object()
 _ANALYZER = _ANALYZER_SENTINEL
 
 
+def _installed_spacy_model():
+    """Return an already-INSTALLED spaCy English model name, or None. We NEVER download one — a bare
+    AnalyzerEngine() defaults to en_core_web_lg (~560MB) and will try to fetch it at runtime (fatal
+    inside the em-bash OS sandbox, which denies the write). So Presidio's NER is used only if a model
+    is already present; otherwise we fall back to the regex detectors below."""
+    import importlib.util
+    for name in ("en_core_web_lg", "en_core_web_md", "en_core_web_sm"):
+        if importlib.util.find_spec(name) is not None:
+            return name
+    return None
+
+
 def _shared_analyzer():
     global _ANALYZER
     if _ANALYZER is _ANALYZER_SENTINEL:
-        try:
-            from presidio_analyzer import AnalyzerEngine
-            from presidio_analyzer.nlp_engine import NlpEngineProvider  # noqa: F401
-            _ANALYZER = AnalyzerEngine()
-        except Exception:
-            _ANALYZER = None
+        _ANALYZER = None
+        model = _installed_spacy_model()
+        if model is not None:                       # only build Presidio NER if a model already exists
+            try:
+                from presidio_analyzer import AnalyzerEngine
+                from presidio_analyzer.nlp_engine import NlpEngineProvider
+                provider = NlpEngineProvider(nlp_configuration={
+                    "nlp_engine_name": "spacy",
+                    "models": [{"lang_code": "en", "model_name": model}],
+                })
+                _ANALYZER = AnalyzerEngine(nlp_engine=provider.create_nlp_engine())
+            except Exception:
+                _ANALYZER = None                    # any failure → regex fallback, never a download
     return _ANALYZER
+
+
+def redaction_backend() -> str:
+    """Which redaction is active: "presidio" (typed PII incl. names via NER) or "regex" (emails, cards,
+    SSNs, API keys — always available, no deps, no model). Used to tell the UI what it can offer."""
+    return "presidio" if _shared_analyzer() is not None else "regex"
 
 
 class PiiDlp(Plugin):

